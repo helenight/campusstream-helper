@@ -112,6 +112,16 @@ class UiSmokeTest(unittest.TestCase):
         self.assertEqual(self.app.styleSheet(), DARK_QSS)
         self.assertIn("深色", self.window.theme_switcher.text())
 
+    def test_detection_disables_navigation(self) -> None:
+        self.window._detecting = True
+        self.window._update_nav()
+        self.assertFalse(self.window.next_button.isEnabled())
+        self.assertIn("检测中", self.window.next_button.text())
+
+        self.window._detecting = False
+        self.window._update_nav()
+        self.assertTrue(self.window.next_button.isEnabled())
+
     def test_device_selection_builds_plan(self) -> None:
         devices = self.window.devices_step
         item, preset = devices._items[0]

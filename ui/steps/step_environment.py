@@ -1,52 +1,172 @@
-"""Step 1：环境自检。"""
+"""Step 1：环境自检的逐项进度、四态徽章与修复入口。"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from datetime import datetime
+
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
+    QProgressBar,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from core.detection import (
+    DetectionItem,
+    DetectionState,
+    ITEM_LABELS,
+    ITEM_ORDER,
+    pending_items,
+    summarize,
+)
 from core.privileges import is_admin
 from ui.widgets import (
     Banner,
     Card,
     InfoRow,
+    StatusBadge,
     StatusPill,
     heading,
     make_button,
     muted_label,
+    repolish,
 )
 from ui.workers import EnvironmentData
 
-SUNSHINE_URL = "https://github.com/LizardByte/Sunshine"
-VDD_URL = "https://github.com/VirtualDrivers/Virtual-Display-Driver"
+STATE_TEXT = {
+    DetectionState.PENDING: "⏳ 等待检测",
+    DetectionState.RUNNING: "⏳ 检测中...",
+    DetectionState.READY: "✅ 已就绪",
+    DetectionState.WARNING: "⚠️ 未安装 / 需处理",
+    DetectionState.FAILED: "❌ 检测失败",
+}
+
+
+def _badge_text(item: DetectionItem) -> str:
+    if item.state != DetectionState.WARNING:
+        return STATE_TEXT[item.state]
+    needs_install = any(
+        action.kind in {"download_sunshine", "download_vdd"}
+        for action in item.actions
+    )
+    return "⚠️ 未安装 / 需处理" if needs_install else "⚠️ 需处理"
+
+
+def _clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+
+
+class _DetectionCard(Card):
+    """单个检测项：标题、状态徽章、明细和操作按钮。"""
+
+    action_triggered = Signal(str, object)
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent=parent)
+        self._rows: list[InfoRow] = []
+        self._actions = ()
+
+        header = QHBoxLayout()
+        header.addWidget(heading(title))
+        header.addStretch()
+        self.badge = StatusBadge("⏳ 等待检测", "pending")
+        header.addWidget(self.badge)
+        self.add_layout(header)
+
+        self.summary = QLabel("")
+        self.summary.setObjectName("Muted")
+        self.summary.setWordWrap(True)
+        self.summary.setVisible(False)
+        self.add(self.summary)
+
+        self.detail_container = QWidget()
+        self.detail_layout = QVBoxLayout(self.detail_container)
+        self.detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.detail_layout.setSpacing(4)
+        self.add(self.detail_container)
+
+        self.action_container = QWidget()
+        self.action_layout = QHBoxLayout(self.action_container)
+        self.action_layout.setContentsMargins(0, 4, 0, 0)
+        self.action_layout.setSpacing(8)
+        self.action_container.setVisible(False)
+        self.add(self.action_container)
+        self.body.addStretch(1)
+
+    def apply_item(self, item: DetectionItem) -> None:
+        self.badge.set_state(item.state.value, _badge_text(item))
+        self.summary.setText(item.summary)
+        self.summary.setVisible(bool(item.summary))
+
+        _clear_layout(self.detail_layout)
+        self._rows = []
+        for label, value in item.detail:
+            row = InfoRow(label, value)
+            self.detail_layout.addWidget(row)
+            self._rows.append(row)
+
+        _clear_layout(self.action_layout)
+        self._actions = item.actions
+        for action in item.actions:
+            kind = (
+                "primary"
+                if action.kind in {"download_sunshine", "download_vdd"}
+                else "secondary"
+            )
+            button = make_button(action.label, kind)
+            button.clicked.connect(
+                lambda _checked=False, current=action: self.action_triggered.emit(
+                    current.kind, current.payload
+                )
+            )
+            self.action_layout.addWidget(button)
+        self.action_layout.addStretch()
+        self.action_container.setVisible(bool(item.actions))
+
+    def refresh_theme(self) -> None:
+        for row in self._rows:
+            row.refresh_theme()
 
 
 class EnvironmentStep(QWidget):
-    """展示环境检测结果，并发出修复 / 重新检测请求。"""
+    """展示五项检测结果，并发出修复 / 下载 / 重新检测请求。"""
 
     refresh_requested = Signal()
     fix_ipv6_requested = Signal(list)
     relaunch_requested = Signal()
+    download_requested = Signal(str)
+    restart_sunshine_requested = Signal()
+    add_firewall_requested = Signal()
+    device_manager_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._data: EnvironmentData | None = None
         self._dry_run = False
-        self._disabled_ipv6: list[str] = []
+        self._detecting = False
+        self._items: dict[str, DetectionItem] = {}
+        self._cards: dict[str, _DetectionCard] = {}
+        self._last_finished_at: datetime | None = None
         self._build_ui()
+        self._reset_cards()
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -57,11 +177,35 @@ class EnvironmentStep(QWidget):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(14)
 
-        self.mode_banner = Banner(
-            "正在检测系统环境，请稍候…",
-            tone="info",
-            title="环境状态",
-        )
+        summary_card = Card()
+        summary_header = QHBoxLayout()
+        self.summary_title = heading("系统环境检测")
+        summary_header.addWidget(self.summary_title)
+        summary_header.addStretch()
+        self.summary_pill = StatusPill("等待检测", "muted")
+        summary_header.addWidget(self.summary_pill)
+        summary_card.add_layout(summary_header)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 5)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        summary_card.add(self.progress)
+
+        summary_footer = QHBoxLayout()
+        self.progress_text = muted_label("正在准备检测…")
+        summary_footer.addWidget(self.progress_text, 1)
+        self.timestamp_label = QLabel("上次检测：—")
+        self.timestamp_label.setObjectName("Muted")
+        summary_footer.addWidget(self.timestamp_label)
+        self.refresh_button = make_button("重新检测", "primary")
+        self.refresh_button.clicked.connect(self.refresh_requested.emit)
+        summary_footer.addWidget(self.refresh_button)
+        summary_card.add_layout(summary_footer)
+        layout.addWidget(summary_card)
+
+        self.mode_banner = Banner("", tone="info", title="运行模式")
         layout.addWidget(self.mode_banner)
 
         grid = QGridLayout()
@@ -69,284 +213,184 @@ class EnvironmentStep(QWidget):
         grid.setVerticalSpacing(14)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-
-        self.system_card = Card()
-        self.system_pill = StatusPill("检测中", "muted")
-        self.system_rows = self._build_card(
-            self.system_card,
-            "权限与运行模式",
-            self.system_pill,
-            ("当前权限", "运行模式", "电源方案", "交流电源"),
-        )
-
-        self.sunshine_card = Card()
-        self.sunshine_pill = StatusPill("检测中", "muted")
-        self.sunshine_rows = self._build_card(
-            self.sunshine_card,
-            "Sunshine 服务端",
-            self.sunshine_pill,
-            ("安装目录", "版本", "服务状态", "配置文件"),
-        )
-
-        self.vdd_card = Card()
-        self.vdd_pill = StatusPill("检测中", "muted")
-        self.vdd_rows = self._build_card(
-            self.vdd_card,
-            "虚拟显示器驱动",
-            self.vdd_pill,
-            ("配置文件", "XML 结构", "虚拟屏数量", "分辨率条目", "驱动版本"),
-        )
-
-        self.network_card = Card()
-        self.network_pill = StatusPill("检测中", "muted")
-        self.network_rows = self._build_card(
-            self.network_card,
-            "网络与防火墙",
-            self.network_pill,
-            ("网络场景", "有线 IPv4", "无线 IPv4", "全局 IPv6", "推荐地址", "防火墙"),
-        )
-
-        grid.addWidget(self.system_card, 0, 0)
-        grid.addWidget(self.sunshine_card, 0, 1)
-        grid.addWidget(self.vdd_card, 1, 0)
-        grid.addWidget(self.network_card, 1, 1)
+        for key in ITEM_ORDER:
+            card = _DetectionCard(ITEM_LABELS[key])
+            card.action_triggered.connect(self._on_card_action)
+            self._cards[key] = card
+        grid.addWidget(self._cards["admin"], 0, 0)
+        grid.addWidget(self._cards["gpu"], 0, 1)
+        grid.addWidget(self._cards["sunshine"], 1, 0)
+        grid.addWidget(self._cards["vdd"], 1, 1)
+        grid.addWidget(self._cards["network"], 2, 0, 1, 2)
         layout.addLayout(grid)
 
-        self.warning_banner = Banner("", tone="warning", title="需要注意")
+        self.warning_banner = Banner("", tone="warning", title="网络提示")
         self.warning_banner.setVisible(False)
         layout.addWidget(self.warning_banner)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        self.refresh_button = make_button("重新检测", "primary")
-        self.refresh_button.clicked.connect(self.refresh_requested.emit)
-        self.fix_button = make_button("修复 IPv6 绑定", "secondary")
-        self.fix_button.setVisible(False)
-        self.fix_button.clicked.connect(self._emit_fix)
-        self.relaunch_button = make_button("以管理员身份重启", "secondary")
-        self.relaunch_button.setVisible(not is_admin())
-        self.relaunch_button.clicked.connect(self.relaunch_requested.emit)
-
-        actions.addWidget(self.refresh_button)
-        actions.addWidget(self.fix_button)
-        actions.addWidget(self.relaunch_button)
-        actions.addStretch()
-        actions.addWidget(self._link_button("Sunshine 官网", SUNSHINE_URL))
-        actions.addWidget(self._link_button("VDD 项目页", VDD_URL))
-        layout.addLayout(actions)
-
-        self.status_label = muted_label("首次检测会自动开始。")
-        layout.addWidget(self.status_label)
         layout.addStretch()
+
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    def _build_card(
-        self,
-        card: Card,
-        title: str,
-        pill: StatusPill,
-        row_names: tuple[str, ...],
-    ) -> dict[str, InfoRow]:
-        header = QHBoxLayout()
-        header.addWidget(heading(title))
-        header.addStretch()
-        header.addWidget(pill)
-        card.add_layout(header)
-        rows: dict[str, InfoRow] = {}
-        for name in row_names:
-            row = InfoRow(name)
-            rows[name] = row
-            card.add(row)
-        return rows
+    def _reset_cards(self) -> None:
+        self._items = {}
+        for item in pending_items():
+            self._items[item.key] = item
+            self._cards[item.key].apply_item(item)
 
-    def _link_button(self, text: str, url: str):
-        button = make_button(text, "link")
-        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
-        return button
+    # ------------------------------------------------------------------
+    # 检测生命周期
+    # ------------------------------------------------------------------
 
-    def set_loading(self, loading: bool) -> None:
-        self.refresh_button.setEnabled(not loading)
-        if loading:
-            self.status_label.setText("正在读取网卡、Sunshine、VDD 与电源状态…")
-            self.mode_banner.set_text(
-                "正在检测系统环境，请稍候…",
-                tone="info",
-                title="环境状态",
-            )
+    @property
+    def is_detecting(self) -> bool:
+        return self._detecting
 
-    def set_mode(self, dry_run: bool) -> None:
-        self._dry_run = dry_run
-        if self._data is not None:
-            self.set_data(self._data)
-        else:
-            self._render_mode("检测中", "muted")
+    def start_detection(self) -> None:
+        self._detecting = True
+        self._reset_cards()
+        self.summary_title.setText("系统环境检测")
+        self.summary_pill.set_status("检测中", "info")
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+        self.progress.setProperty("result", "")
+        repolish(self.progress)
+        self.progress_text.setText("正在检测系统环境（已完成 0/5 项）…")
+        self.timestamp_label.setText(
+            f"上次检测：{self._last_finished_at.strftime('%H:%M:%S')}"
+            if self._last_finished_at
+            else "上次检测：—"
+        )
+        self.refresh_button.setText("检测中...")
+        self.refresh_button.setEnabled(False)
+        self.warning_banner.setVisible(False)
+        self._render_mode()
 
-    def refresh_theme(self) -> None:
-        """主题切换后重新应用 InfoRow 的动态 tone 颜色。"""
-        for rows in (
-            self.system_rows,
-            self.sunshine_rows,
-            self.vdd_rows,
-            self.network_rows,
-        ):
-            for row in rows.values():
-                row.refresh_theme()
+    def apply_item(self, item: DetectionItem) -> None:
+        self._items[item.key] = item
+        self._cards[item.key].apply_item(item)
 
-    def set_error(self, message: str) -> None:
-        self.refresh_button.setEnabled(True)
-        self.status_label.setText("检测失败，请查看下方信息后重试。")
-        self.mode_banner.set_text(message, tone="danger", title="环境检测失败")
+    def set_progress(self, completed: int, total: int) -> None:
+        if not self._detecting:
+            return
+        self.progress_text.setText(
+            f"正在检测系统环境（已完成 {completed}/{total} 项）…"
+        )
 
-    def set_data(self, data: EnvironmentData) -> None:
+    def finish(self, data: EnvironmentData) -> None:
+        self._detecting = False
+        if not data.items:
+            self.set_error("检测未返回任何结果，请重新检测。")
+            return
         self._data = data
+        for item in data.items:
+            self._items[item.key] = item
+            self._cards[item.key].apply_item(item)
+
+        text, result = summarize(data.items)
+        self.summary_title.setText(text)
+        self.progress.setRange(0, 5)
+        self.progress.setValue(5)
+        self.progress.setProperty("result", result)
+        repolish(self.progress)
+        self.progress_text.setText("已完成 5/5 项检测，可继续下一步。")
+        self.refresh_button.setText("重新检测")
         self.refresh_button.setEnabled(True)
-        self.status_label.setText("环境检测完成。修改系统后点击「重新检测」。")
 
-        self._render_mode("管理员已就绪", "success")
-        self.system_rows["当前权限"].set_value("管理员" if is_admin() else "普通用户")
-        self.system_rows["当前权限"].set_tone("success" if is_admin() else "warning")
-        self.system_rows["运行模式"].set_value(
-            "Dry-Run（只检测 / 不写入）" if self._dry_run else "真实配置"
-        )
-        self.system_rows["运行模式"].set_tone("info" if self._dry_run else "muted")
-        power = data.power
-        if power is None:
-            self.system_rows["电源方案"].set_value("读取失败")
-            self.system_rows["交流电源"].set_value("未知")
+        states = [item.state for item in data.items]
+        failed = states.count(DetectionState.FAILED)
+        warning = states.count(DetectionState.WARNING)
+        if failed:
+            self.summary_pill.set_status(f"{failed} 项失败", "danger")
+        elif warning:
+            self.summary_pill.set_status(f"{warning} 项待处理", "warning")
         else:
-            self.system_rows["电源方案"].set_value(power.scheme_name)
-            self.system_rows["交流电源"].set_value(
-                f"睡眠 {self._format_seconds(power.ac_sleep_seconds)} · "
-                f"关屏 {self._format_seconds(power.ac_display_off_seconds)}"
-            )
+            self.summary_pill.set_status("全部就绪", "success")
 
-        sunshine = data.sunshine
-        if not sunshine.installed:
-            self.sunshine_pill.set_status("未安装", "danger")
-        elif sunshine.service_state == "running":
-            self.sunshine_pill.set_status("运行中", "success")
-        else:
-            self.sunshine_pill.set_status("服务未运行", "warning")
-        self.sunshine_rows["安装目录"].set_value(str(sunshine.install_dir or "未检测到"))
-        self.sunshine_rows["版本"].set_value(sunshine.version or "未知")
-        self.sunshine_rows["服务状态"].set_value(
-            f"{sunshine.service_name} · {sunshine.service_state}"
+        finished_at = data.finished_at or datetime.now().astimezone()
+        self._last_finished_at = finished_at
+        self.timestamp_label.setText(
+            f"上次检测：{finished_at.strftime('%H:%M:%S')}"
         )
-        self.sunshine_rows["配置文件"].set_value(
-            str(sunshine.config_path or "未找到 sunshine.conf")
-        )
+        self._render_mode()
 
-        vdd = data.vdd
-        if not vdd.installed:
-            self.vdd_pill.set_status("未安装", "danger")
-        elif vdd.settings_path is None:
-            self.vdd_pill.set_status("缺少配置", "warning")
-        else:
-            self.vdd_pill.set_status("就绪", "success")
-        self.vdd_rows["配置文件"].set_value(
-            str(vdd.settings_path or "未找到 vdd_settings.xml")
-        )
-        self.vdd_rows["XML 结构"].set_value(vdd.schema)
-        self.vdd_rows["虚拟屏数量"].set_value(str(vdd.configured_monitor_count))
-        self.vdd_rows["分辨率条目"].set_value(str(vdd.configured_resolution_count))
-        self.vdd_rows["驱动版本"].set_value(vdd.driver_version or "未知")
-
-        network = data.network
-        scenario_map = {
-            "ethernet_ready": ("有线网络就绪", "success"),
-            "wifi_only": ("仅无线网络", "warning"),
-            "offline": ("未联网", "danger"),
-        }
-        scenario_text, scenario_tone = scenario_map.get(
-            network.scenario, ("未知", "muted")
-        )
-        self.network_pill.set_status(scenario_text, scenario_tone)
-        self.network_rows["网络场景"].set_value(scenario_text)
-        self.network_rows["有线 IPv4"].set_value(network.ethernet_ipv4 or "未检测到")
-        self.network_rows["无线 IPv4"].set_value(network.wlan_ipv4 or "未检测到")
-        self.network_rows["全局 IPv6"].set_value(network.preferred_ipv6 or "未检测到")
-        self.network_rows["推荐地址"].set_value(
-            network.recommended_client_ip or "未获取到可用地址"
-        )
-        self.network_rows["推荐地址"].set_tone(
-            "success" if network.recommended_client_ip else "warning"
-        )
-        self.network_rows["防火墙"].set_value(
-            "已存在 Sunshine 放行规则"
-            if network.firewall_rule_present
-            else "尚未添加入站规则"
-        )
-        self.network_rows["防火墙"].set_tone(
-            "success" if network.firewall_rule_present else "warning"
-        )
-
-        warnings = list(network.warnings)
-        if not is_admin() and not self._dry_run:
-            warnings.append(
-                "当前不是管理员。真实配置会被系统拒绝；建议点击「以管理员身份重启」或先启用 Dry-Run。"
-            )
-        if not sunshine.installed:
-            warnings.append("未检测到 Sunshine，请先从官网安装并启动服务。")
-        if not vdd.installed:
-            warnings.append("未检测到 Virtual Display Driver，请先安装驱动。")
+        warnings: list[str] = []
+        if data.network is not None:
+            warnings.extend(data.network.warnings)
         if data.error:
             warnings.append(data.error)
         if warnings:
             self.warning_banner.set_text(
                 "\n".join(f"• {item}" for item in warnings),
                 tone="warning",
-                title="需要注意",
+                title="网络提示",
             )
             self.warning_banner.setVisible(True)
         else:
             self.warning_banner.setVisible(False)
 
-        disabled = [
-            adapter.name
-            for adapter in network.adapters
-            if adapter.kind in {"ethernet", "wifi"}
-            and adapter.is_up
-            and not adapter.ipv6_binding_enabled
-        ]
-        self._disabled_ipv6 = disabled
-        if disabled:
-            self.fix_button.setText("修复 IPv6 绑定（" + "、".join(disabled) + "）")
-            self.fix_button.setVisible(True)
-        else:
-            self.fix_button.setVisible(False)
+    def set_error(self, message: str) -> None:
+        self._detecting = False
+        self.summary_title.setText("❌ 环境检测失败")
+        self.summary_pill.set_status("检测失败", "danger")
+        self.progress.setRange(0, 5)
+        self.progress.setValue(0)
+        self.progress.setProperty("result", "failed")
+        repolish(self.progress)
+        self.progress_text.setText(message)
+        self.refresh_button.setText("重新检测")
+        self.refresh_button.setEnabled(True)
+        self.mode_banner.set_text(message, tone="danger", title="环境检测失败")
 
-    def _render_mode(self, ready_text: str = "管理员已就绪", tone: str = "success") -> None:
+    # ------------------------------------------------------------------
+    # 模式与主题
+    # ------------------------------------------------------------------
+
+    def set_mode(self, dry_run: bool) -> None:
+        self._dry_run = dry_run
+        self._render_mode()
+
+    def _render_mode(self) -> None:
         if self._dry_run:
             self.mode_banner.set_text(
                 "Dry-Run 模式已开启：检测照常执行，但所有配置写入只记录、不落盘。",
                 tone="info",
                 title="模拟运行",
             )
-            self.system_pill.set_status("Dry-Run", "info")
         elif is_admin():
             self.mode_banner.set_text(
                 "管理员权限已就绪，可以执行真实的系统配置。",
                 tone="success",
                 title="权限正常",
             )
-            self.system_pill.set_status(ready_text, tone)
         else:
             self.mode_banner.set_text(
                 "当前以普通权限运行。真实配置需要管理员权限；可重启提权，或开启 Dry-Run 先体验流程。",
                 tone="danger",
                 title="权限不足",
             )
-            self.system_pill.set_status("普通权限", "warning")
 
-    def _emit_fix(self) -> None:
-        if self._disabled_ipv6:
-            self.fix_ipv6_requested.emit(list(self._disabled_ipv6))
+    def refresh_theme(self) -> None:
+        for card in self._cards.values():
+            card.refresh_theme()
 
-    @staticmethod
-    def _format_seconds(seconds: int) -> str:
-        if seconds == 0:
-            return "永不"
-        if seconds < 0:
-            return "未知"
-        return f"{max(1, (seconds + 30) // 60)} 分钟"
+    # ------------------------------------------------------------------
+    # 操作
+    # ------------------------------------------------------------------
+
+    def _on_card_action(self, kind: str, payload: object) -> None:
+        values = tuple(payload) if isinstance(payload, (tuple, list)) else ()
+        if kind == "download_sunshine":
+            self.download_requested.emit("sunshine")
+        elif kind == "download_vdd":
+            self.download_requested.emit("vdd")
+        elif kind == "fix_ipv6":
+            self.fix_ipv6_requested.emit([str(value) for value in values])
+        elif kind == "relaunch_admin":
+            self.relaunch_requested.emit()
+        elif kind == "restart_sunshine":
+            self.restart_sunshine_requested.emit()
+        elif kind == "add_firewall":
+            self.add_firewall_requested.emit()
+        elif kind == "open_device_manager":
+            self.device_manager_requested.emit()

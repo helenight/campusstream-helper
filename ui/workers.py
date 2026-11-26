@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
 from core.common import CommandRunner, OperationResult, default_state_dir
+from core.detection import (
+    DetectionItem,
+    DetectionState,
+    ITEM_ORDER,
+    admin_item,
+    failed_item,
+    gpu_item,
+    network_item,
+    running_item,
+    sunshine_item,
+    vdd_item,
+)
+from core.gpu import GpuInfo, detect_gpu
 from core.network import (
     NetworkReport,
     collect_network_report,
@@ -22,6 +36,7 @@ from core.power import (
     read_power_state,
     restore_previous_profile,
 )
+from core.privileges import is_admin
 from core.sunshine import (
     SunshineStatus,
     apply_config,
@@ -42,46 +57,131 @@ from core.vdd import (
 
 @dataclass(frozen=True, slots=True)
 class EnvironmentData:
-    """Step 1 一次完整环境检测的结果。"""
+    """Step 1 一次完整环境检测的结果；单项失败时对应字段为 ``None``。"""
 
-    network: NetworkReport
-    sunshine: SunshineStatus
-    vdd: VddStatus
+    network: NetworkReport | None
+    sunshine: SunshineStatus | None
+    vdd: VddStatus | None
     power: PowerState | None = None
+    gpu: GpuInfo | None = None
+    items: tuple[DetectionItem, ...] = ()
+    finished_at: datetime | None = None
     error: str | None = None
 
 
 class DetectionWorker(QObject):
-    """在后台执行只读环境检测，避免启动时界面卡顿。"""
+    """在后台逐项执行只读环境检测，并把每一项状态实时回传界面。"""
 
-    finished = Signal(object)
+    item_changed = Signal(object)   # DetectionItem
+    progress = Signal(int, int)     # completed, total
+    busy_changed = Signal(bool)
+    finished = Signal(object)       # EnvironmentData
     failed = Signal(str)
     log = Signal(str)
 
     def __init__(self, *, dry_run: bool = False) -> None:
         super().__init__()
         self._dry_run = dry_run
+        self._items: dict[str, DetectionItem] = {}
+
+    def _publish(self, item: DetectionItem) -> None:
+        self._items[item.key] = item
+        self.item_changed.emit(item)
+        completed = sum(
+            1
+            for current in self._items.values()
+            if current.state in {
+                DetectionState.READY,
+                DetectionState.WARNING,
+                DetectionState.FAILED,
+            }
+        )
+        self.progress.emit(completed, len(ITEM_ORDER))
 
     def run(self) -> None:
         runner = CommandRunner(dry_run=self._dry_run, log_sink=self.log.emit)
-        try:
-            sunshine = detect_sunshine(runner)
-            vdd = detect_vdd(runner)
-            network = collect_network_report(runner, sunshine_exe=sunshine.executable)
-            power: PowerState | None = None
+        self.busy_changed.emit(True)
+        sunshine: SunshineStatus | None = None
+        vdd: VddStatus | None = None
+        network: NetworkReport | None = None
+        power: PowerState | None = None
+        gpu: GpuInfo | None = None
+
+        def step(key: str, label: str, detect) -> DetectionItem:
+            self._publish(running_item(key))  # type: ignore[arg-type]
+            try:
+                return detect()
+            except Exception as exc:
+                runner.log(f"[检测] {label} 失败：{type(exc).__name__}: {exc}")
+                return failed_item(key, f"{type(exc).__name__}: {exc}")  # type: ignore[arg-type]
+
+        def detect_admin() -> DetectionItem:
+            nonlocal power
+            ok = is_admin()
             try:
                 power = read_power_state(runner)
             except Exception as exc:
                 runner.log(f"[电源] 读取失败，跳过电源状态展示: {exc}")
-            self.finished.emit(
-                EnvironmentData(
-                    network=network,
-                    sunshine=sunshine,
-                    vdd=vdd,
-                    power=power,
-                )
+            return admin_item(ok, power)
+
+        def detect_sunshine_item() -> DetectionItem:
+            nonlocal sunshine
+            sunshine = detect_sunshine(runner)
+            return sunshine_item(sunshine)
+
+        def detect_vdd_item() -> DetectionItem:
+            nonlocal vdd
+            vdd = detect_vdd(runner)
+            return vdd_item(vdd)
+
+        def detect_gpu_item() -> DetectionItem:
+            nonlocal gpu
+            gpu = detect_gpu(runner)
+            return gpu_item(gpu)
+
+        def detect_network_item() -> DetectionItem:
+            nonlocal network
+            network = collect_network_report(
+                runner,
+                sunshine_exe=sunshine.executable if sunshine else None,
             )
+            return network_item(
+                network,
+                can_add_firewall=bool(sunshine and sunshine.executable),
+            )
+
+        try:
+            self._publish(
+                step("admin", "管理员权限", detect_admin)
+            )
+            self._publish(
+                step("gpu", "显卡", detect_gpu_item)
+            )
+            self._publish(
+                step("sunshine", "Sunshine 服务端", detect_sunshine_item)
+            )
+            self._publish(
+                step("vdd", "虚拟显示驱动", detect_vdd_item)
+            )
+            self._publish(
+                step("network", "网络与防火墙", detect_network_item)
+            )
+            items = tuple(
+                self._items[key] for key in ITEM_ORDER if key in self._items
+            )
+            data = EnvironmentData(
+                network=network,
+                sunshine=sunshine,
+                vdd=vdd,
+                power=power,
+                gpu=gpu,
+                items=items,
+                finished_at=datetime.now().astimezone(),
+            )
+            self.busy_changed.emit(False)
+            self.finished.emit(data)
         except Exception as exc:
+            self.busy_changed.emit(False)
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
-from PySide6.QtCore import QEvent, Qt, QThread, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,9 +21,10 @@ from PySide6.QtWidgets import (
 
 from core import __version__
 from core.common import CommandRunner, OperationResult
-from core.network import enable_ipv6_binding
+from core.network import enable_ipv6_binding, ensure_firewall_rule
 from core.plan import SetupPlan, SetupSummary
 from core.privileges import is_admin, relaunch_as_admin
+from core.sunshine import restart_service
 from core.vdd import restore_native_display
 from ui.steps.step_devices import DevicesStep
 from ui.steps.step_environment import EnvironmentStep
@@ -37,6 +39,11 @@ STEP_META: tuple[tuple[str, str], ...] = (
     ("客户端与设备", "选择平台与分辨率"),
     ("一键配置", "后台执行与回滚"),
     ("配对指引", "连接地址与分平台提示"),
+)
+
+SUNSHINE_RELEASES = "https://github.com/LizardByte/Sunshine/releases/latest"
+VDD_RELEASES = (
+    "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/latest"
 )
 
 
@@ -94,6 +101,7 @@ class WizardWindow(QMainWindow):
         self.env_data: EnvironmentData | None = None
         self.summary: SetupSummary | None = None
         self.pending_plan: SetupPlan | None = None
+        self._detecting = False
 
         self._detect_thread: QThread | None = None
         self._detect_worker: DetectionWorker | None = None
@@ -215,6 +223,14 @@ class WizardWindow(QMainWindow):
         self.environment_step.refresh_requested.connect(self.refresh_environment)
         self.environment_step.fix_ipv6_requested.connect(self._fix_ipv6)
         self.environment_step.relaunch_requested.connect(self._relaunch)
+        self.environment_step.download_requested.connect(self._open_download_page)
+        self.environment_step.restart_sunshine_requested.connect(
+            self._restart_sunshine
+        )
+        self.environment_step.add_firewall_requested.connect(self._add_firewall)
+        self.environment_step.device_manager_requested.connect(
+            self._open_device_manager
+        )
         self.devices_step.selection_changed.connect(self._on_selection_changed)
         self.execute_step.setup_finished.connect(self._on_setup_finished)
         self.execute_step.rollback_finished.connect(self._on_rollback_finished)
@@ -272,11 +288,16 @@ class WizardWindow(QMainWindow):
     def _update_nav(self) -> None:
         index = self.current_step
         busy = self.execute_step.is_busy
-        self.back_button.setEnabled(index > 0 and not busy)
+        self.back_button.setEnabled(index > 0 and not busy and not self._detecting)
         if busy:
             self.next_button.setEnabled(False)
             self.next_button.setText("执行中…")
             self.nav_hint.setText("后台任务执行中，界面保持响应，请稍候…")
+            return
+        if self._detecting:
+            self.next_button.setText("检测中…")
+            self.next_button.setEnabled(False)
+            self.nav_hint.setText("正在检测系统环境，请稍候…")
             return
         if index == 2:
             self.next_button.setText("查看指引")
@@ -292,7 +313,7 @@ class WizardWindow(QMainWindow):
             self.nav_hint.setText(
                 "检测完成，可继续下一步。"
                 if self.env_data is not None
-                else "正在检测系统环境…"
+                else "检测未完成，请点击「重新检测」。"
             )
         elif index == 1:
             monitors = self.devices_step.selected_monitors()
@@ -320,13 +341,25 @@ class WizardWindow(QMainWindow):
         if self.execute_step.is_busy:
             QMessageBox.information(self, "请稍候", "后台任务执行中，请等待完成。")
             return
+        if self._detecting:
+            QMessageBox.information(self, "检测中", "请等待环境检测完成后再继续。")
+            return
         index = self.current_step
 
         if index == 0:
             if self.env_data is None:
-                QMessageBox.information(self, "检测未完成", "环境检测尚未完成，请稍候。")
+                QMessageBox.information(
+                    self, "检测未完成", "环境检测尚未完成，请点击「重新检测」。"
+                )
                 return
-            if not self.env_data.sunshine.installed or not self.env_data.vdd.installed:
+            sunshine = self.env_data.sunshine
+            vdd = self.env_data.vdd
+            if (
+                sunshine is None
+                or not sunshine.installed
+                or vdd is None
+                or not vdd.installed
+            ):
                 answer = QMessageBox.question(
                     self,
                     "环境未就绪",
@@ -379,8 +412,11 @@ class WizardWindow(QMainWindow):
     def refresh_environment(self) -> None:
         if self._detect_thread is not None and self._detect_thread.isRunning():
             return
-        self.environment_step.set_loading(True)
+        self._detecting = True
+        self.env_data = None
         self.environment_step.set_mode(self.dry_run)
+        self.environment_step.start_detection()
+        self._update_nav()
         thread = QThread(self)
         worker = DetectionWorker(dry_run=self.dry_run)
         self._detect_thread = thread
@@ -388,6 +424,8 @@ class WizardWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.log.connect(self._on_detection_log)
+        worker.item_changed.connect(self.environment_step.apply_item)
+        worker.progress.connect(self.environment_step.set_progress)
         worker.finished.connect(self._on_environment_ready)
         worker.failed.connect(self._on_environment_failed)
         worker.finished.connect(thread.quit)
@@ -402,19 +440,23 @@ class WizardWindow(QMainWindow):
 
     def _on_environment_ready(self, data: EnvironmentData) -> None:
         self.env_data = data
-        self.environment_step.set_loading(False)
-        self.environment_step.set_data(data)
+        self._detecting = False
+        self.environment_step.finish(data)
         self.devices_step.set_environment(data)
         self._update_nav()
 
     def _on_environment_failed(self, message: str) -> None:
-        self.environment_step.set_loading(False)
+        self._detecting = False
         self.environment_step.set_error(message)
+        self._update_nav()
         self.statusBar().showMessage(f"环境检测失败：{message}", 6000)
 
     def _on_detect_thread_finished(self) -> None:
         self._detect_thread = None
         self._detect_worker = None
+        if self._detecting:
+            self._detecting = False
+            self.environment_step.set_error("检测线程意外结束，请重试。")
         self._update_nav()
 
     # ------------------------------------------------------------------
@@ -541,6 +583,58 @@ class WizardWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "IPv6 修复失败", result.message)
         self.refresh_environment()
+
+    def _open_download_page(self, package: str) -> None:
+        """临时兜底：自动下载安装将在后续模块接入。"""
+        url = SUNSHINE_RELEASES if package == "sunshine" else VDD_RELEASES
+        QDesktopServices.openUrl(QUrl(url))
+        self.statusBar().showMessage(
+            "已打开官方下载页；一键自动安装将在后续提交接入。", 5000
+        )
+
+    def _restart_sunshine(self) -> None:
+        sunshine = self.env_data.sunshine if self.env_data else None
+        if sunshine is None:
+            QMessageBox.warning(self, "无法启动", "尚未检测到 Sunshine 安装信息。")
+            return
+        self._run_task(
+            FunctionWorker(
+                lambda runner: restart_service(runner, sunshine),
+                dry_run=self.dry_run,
+            ),
+            self._on_repair_finished,
+        )
+
+    def _add_firewall(self) -> None:
+        sunshine = self.env_data.sunshine if self.env_data else None
+        exe = sunshine.executable if sunshine else None
+        if exe is None:
+            QMessageBox.warning(
+                self,
+                "无法添加规则",
+                "未找到 sunshine.exe，请先安装 Sunshine。",
+            )
+            return
+        self._run_task(
+            FunctionWorker(
+                lambda runner: ensure_firewall_rule(runner, exe),
+                dry_run=self.dry_run,
+            ),
+            self._on_repair_finished,
+        )
+
+    def _on_repair_finished(self, result: OperationResult) -> None:
+        if result.ok:
+            QMessageBox.information(self, "修复完成", result.message)
+        else:
+            QMessageBox.warning(self, "修复失败", result.message)
+        self.refresh_environment()
+
+    def _open_device_manager(self) -> None:
+        try:
+            os.startfile("devmgmt.msc")  # type: ignore[attr-defined]
+        except OSError as exc:
+            QMessageBox.warning(self, "无法打开设备管理器", str(exc))
 
     def _restore_display(self) -> None:
         self._run_task(
