@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.common import CommandRunner
 from core.sunshine import (
@@ -13,6 +15,7 @@ from core.sunshine import (
     SunshineStatus,
     apply_config,
     build_config_plan,
+    configured_output_name,
     default_resolution_mode,
     detect_sunshine,
     find_virtual_display_id,
@@ -20,6 +23,54 @@ from core.sunshine import (
     read_config,
 )
 from tests.fakes import FakeRunner
+
+PHYSICAL_ID = "{11111111-1111-1111-1111-111111111111}"
+VDD_ID = "{22222222-2222-2222-2222-222222222222}"
+VDD_ID_2 = "{33333333-3333-3333-3333-333333333333}"
+
+
+def device(
+    device_id: str,
+    display_name: str,
+    friendly_name: str,
+    *,
+    primary: bool | None = None,
+    manufacturer: str = "TMX",
+) -> dict:
+    info = None
+    if primary is not None:
+        info = {
+            "primary": primary,
+            "resolution": {"width": 2560, "height": 1600},
+        }
+    return {
+        "device_id": device_id,
+        "display_name": display_name,
+        "edid": {"manufacturer_id": manufacturer},
+        "friendly_name": friendly_name,
+        "info": info,
+    }
+
+
+def display_block(devices: list[dict], prefix: str = "") -> str:
+    return (
+        f"{prefix}[2026-11-26 13:18:46.498]: Info: Currently available devices:\n"
+        + json.dumps(devices, ensure_ascii=False)
+        + "\n"
+    )
+
+
+def log_status(root: Path, *, config: Path | None = None) -> SunshineStatus:
+    return SunshineStatus(
+        installed=True,
+        install_dir=root,
+        executable=root / "sunshine.exe",
+        config_path=config,
+        service_name="SunshineService",
+        service_state="running",
+        version=None,
+        detail="test",
+    )
 
 CONFIG_TEXT = """# Sunshine config
 address_family = ipv6
@@ -95,6 +146,25 @@ class SunshineConfigTest(unittest.TestCase):
             result = apply_config(CommandRunner(), _status(config), SunshineConfigPlan())
             self.assertFalse(result.ok)
 
+    def test_existing_output_name_is_preserved_when_not_replacing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "sunshine.conf"
+            config.write_text(
+                f"output_name = {PHYSICAL_ID}\naddress_family = ipv4\n",
+                encoding="utf-8",
+            )
+            result = apply_config(
+                CommandRunner(),
+                _status(config),
+                SunshineConfigPlan(
+                    output_name=None,
+                    resolution_mode="do_not_change",
+                ),
+            )
+            self.assertTrue(result.ok)
+            text = config.read_text(encoding="utf-8")
+            self.assertIn(f"output_name = {PHYSICAL_ID}", text)
+
 
 class SunshineDetectionTest(unittest.TestCase):
     def test_find_virtual_display_id_prefers_virtual_line(self) -> None:
@@ -117,6 +187,247 @@ class SunshineDetectionTest(unittest.TestCase):
             )
             found = find_virtual_display_id(CommandRunner(), status, log_path=log)
             self.assertEqual(found, "{22222222-2222-2222-2222-222222222222}")
+
+    def test_json_log_prefers_vdd_by_friendly_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "TL160ADMP11-0",
+                            primary=True,
+                        ),
+                        device(
+                            VDD_ID,
+                            "",
+                            "VDD by MTT",
+                            primary=False,
+                            manufacturer="MTT",
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            logs: list[str] = []
+            found = find_virtual_display_id(
+                CommandRunner(log_sink=logs.append),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID)
+            self.assertIn("原始显示器列表", "\n".join(logs))
+            self.assertIn("VDD by MTT", "\n".join(logs))
+
+    def test_json_log_uses_newest_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        device(VDD_ID, "", "VDD by MTT", primary=False),
+                    ]
+                )
+                + "[2026-11-26 13:20:00.000]: Info: restart\n"
+                + display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        device(VDD_ID_2, "", "VDD by MTT", primary=False),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID_2)
+
+    def test_json_log_accepts_keyword_variants(self) -> None:
+        variants = (
+            ("VDD", "Other"),
+            ("MTT Virtual", "Other"),
+            ("Virtual Display", "Other"),
+            ("IddSampleDriver", "Other"),
+            ("Indirect Display", "Other"),
+        )
+        for friendly, manufacturer in variants:
+            with self.subTest(friendly=friendly), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                log = root / "sunshine.log"
+                log.write_text(
+                    display_block(
+                        [
+                            device(
+                                PHYSICAL_ID,
+                                r"\\.\DISPLAY1",
+                                "Laptop",
+                                primary=True,
+                            ),
+                            device(
+                                VDD_ID,
+                                r"\\.\DISPLAY9",
+                                friendly,
+                                primary=False,
+                                manufacturer=manufacturer,
+                            ),
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                found = find_virtual_display_id(
+                    CommandRunner(),
+                    log_status(root),
+                    log_path=log,
+                )
+                self.assertEqual(found, VDD_ID)
+
+    def test_json_log_falls_back_to_non_primary_display(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        device(
+                            VDD_ID,
+                            r"\\.\DISPLAY2",
+                            "Secondary Panel",
+                            primary=False,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID)
+
+    def test_single_physical_display_is_not_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        )
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertIsNone(found)
+
+    def test_json_log_normalizes_missing_braces(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            VDD_ID[1:-1],
+                            "",
+                            "VDD by MTT",
+                            primary=False,
+                        )
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID)
+
+    def test_truncated_newest_block_uses_previous_complete_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block([device(VDD_ID, "", "VDD by MTT", primary=False)])
+                + "[2026-11-26 13:20:00.000]: Info: Currently available devices:\n"
+                + '[{"device_id": "' + VDD_ID_2 + '", "friendly_name": "VDD',
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID)
+
+    def test_localappdata_lizardbyte_log_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "LizardByte" / "Sunshine" / "sunshine.log"
+            log.parent.mkdir(parents=True)
+            log.write_text(
+                display_block([device(VDD_ID, "", "VDD by MTT", primary=False)]),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": str(root), "ProgramFiles": str(root / "pf")},
+                clear=False,
+            ), patch("core.sunshine.DEFAULT_INSTALL_DIR", root / "default"):
+                found = find_virtual_display_id(
+                    CommandRunner(),
+                    log_status(root / "install"),
+                )
+            self.assertEqual(found, VDD_ID)
+
+    def test_configured_output_name_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "sunshine.conf"
+            config.write_text(
+                f"output_name = {PHYSICAL_ID}\n",
+                encoding="utf-8",
+            )
+            status = log_status(root, config=config)
+            self.assertEqual(
+                configured_output_name(CommandRunner(), status),
+                PHYSICAL_ID,
+            )
+            config.write_text("output_name = not-a-guid\n", encoding="utf-8")
+            self.assertIsNone(configured_output_name(CommandRunner(), status))
 
     def test_detect_sunshine_from_registry_and_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

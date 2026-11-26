@@ -61,6 +61,7 @@ from core.sunshine import (
     SunshineStatus,
     apply_config,
     build_config_plan,
+    configured_output_name,
     detect_sunshine,
     find_virtual_display_id,
     pairing_url,
@@ -519,13 +520,32 @@ class SetupWorker(QObject):
     log = Signal(str)
     progress = Signal(int, str)
 
-    def __init__(self, plan: SetupPlan) -> None:
+    def __init__(
+        self,
+        plan: SetupPlan,
+        *,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
         super().__init__()
         self._plan = plan
         self._cancel = threading.Event()
+        self._sleep = sleep or time.sleep
 
     def request_cancel(self) -> None:
         self._cancel.set()
+
+    def _pause(self, seconds: float, reason: str) -> bool:
+        """等待显示器枚举；Dry-Run 与取消请求下不阻塞。"""
+        if self._plan.dry_run:
+            self.log.emit(f"[等待] Dry-Run 跳过等待 {seconds:.1f} 秒（{reason}）")
+            return not self._cancel.is_set()
+        self.log.emit(f"[等待] {reason}，等待 {seconds:.1f} 秒…")
+        ticks = max(1, int(round(seconds / 0.2)))
+        for _ in range(ticks):
+            if self._cancel.is_set():
+                return False
+            self._sleep(0.2)
+        return not self._cancel.is_set()
 
     def run(self) -> None:
         runner = CommandRunner(dry_run=self._plan.dry_run, log_sink=self.log.emit)
@@ -642,24 +662,60 @@ class SetupWorker(QObject):
                 return
 
             if self._plan.reload_driver:
-                emit_progress(30, "重载虚拟显示器驱动")
+                emit_progress(28, "重载虚拟显示器驱动")
                 record("driver_reload", "重载虚拟显示器驱动", reload_driver(runner))
                 if cancelled():
                     finish()
                     return
+                emit_progress(34, "等待虚拟显示器驱动稳定")
+                if not self._pause(2.0, "虚拟显示器驱动重载后"):
+                    cancelled()
+                    finish()
+                    return
 
-            emit_progress(46, "提取虚拟屏 device_id")
+            # 必须先让 Sunshine 重新启动并枚举显示器，日志才可能出现最新设备列表。
+            emit_progress(46, "重启 Sunshine 以枚举显示器")
+            record(
+                "service_initial",
+                "重启 Sunshine（枚举显示器）",
+                restart_service(runner, sunshine),
+            )
+            if cancelled():
+                finish()
+                return
+
+            emit_progress(54, "等待 Sunshine 写入显示器日志")
+            if not self._pause(2.5, "Sunshine 启动后"):
+                cancelled()
+                finish()
+                return
+
+            emit_progress(62, "提取虚拟屏 device_id")
             device_id = find_virtual_display_id(runner, sunshine)
+            if device_id is not None:
+                message = f"已从日志提取：{device_id}"
+                runner.log(f"[Sunshine] 提取到虚拟屏 device_id：{device_id}")
+            else:
+                existing_id = configured_output_name(runner, sunshine)
+                if existing_id is not None:
+                    device_id = existing_id
+                    message = f"未找到新设备，沿用现有 output_name：{existing_id}"
+                    runner.log(
+                        "[Sunshine] 未找到新的虚拟屏设备，沿用 sunshine.conf "
+                        f"中已有的 output_name：{existing_id}"
+                    )
+                else:
+                    message = "未能从日志或 dxgi-info.exe 提取设备 ID"
             outcomes.append(
                 StepOutcome(
                     key="device_id",
                     label="提取虚拟屏 device_id",
                     ok=device_id is not None,
-                    message=device_id or "未能从日志或 dxgi-info.exe 提取设备 ID",
+                    message=message,
                 )
             )
 
-            emit_progress(60, "写入 sunshine.conf")
+            emit_progress(74, "写入 sunshine.conf")
             config_plan = build_config_plan(
                 address_family=self._plan.address_family,
                 output_name=device_id,
@@ -669,14 +725,14 @@ class SetupWorker(QObject):
             result = apply_config(runner, sunshine, config_plan)
             record("sunshine_config", "写入 sunshine.conf", result)
             if result.ok:
-                emit_progress(72, "重启 Sunshine 服务")
+                emit_progress(86, "再次重启 Sunshine 使配置生效")
                 record("service", "重启 Sunshine 服务", restart_service(runner, sunshine))
             if cancelled():
                 finish()
                 return
 
             if self._plan.enable_firewall:
-                emit_progress(82, "添加防火墙放行规则")
+                emit_progress(92, "添加防火墙放行规则")
                 if sunshine.executable is None:
                     outcomes.append(
                         StepOutcome(
@@ -694,7 +750,7 @@ class SetupWorker(QObject):
                     )
 
             if self._plan.apply_power_profile:
-                emit_progress(90, "应用电源保活配置")
+                emit_progress(96, "应用电源保活配置")
                 try:
                     record("power", "电源保活", apply_remote_profile(runner))
                 except Exception as exc:

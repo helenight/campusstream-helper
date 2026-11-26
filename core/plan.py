@@ -51,8 +51,14 @@ class SetupSummary:
 
     @property
     def success(self) -> bool:
-        """关键步骤（VDD、device_id、Sunshine 配置、服务）全部成功。"""
-        critical = {"vdd", "device_id", "sunshine_config", "service"}
+        """关键步骤（VDD、首次枚举重启、device_id、配置、最终重启）全部成功。"""
+        critical = {
+            "vdd",
+            "service_initial",
+            "device_id",
+            "sunshine_config",
+            "service",
+        }
         critical_outcomes = [item for item in self.outcomes if item.key in critical]
         return bool(critical_outcomes) and all(item.ok for item in critical_outcomes)
 

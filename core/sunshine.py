@@ -46,6 +46,17 @@ KEY_DD_REFRESH_RATE = "dd_refresh_rate_option"
 _GUID_RE = re.compile(
     r"\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}"
 )
+_BARE_GUID_RE = re.compile(
+    r"(?<!\{)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?!\})"
+)
+_VIRTUAL_DISPLAY_KEYWORDS = ("vdd", "mtt", "virtual", "idd", "indirect")
+_DISPLAY_BLOCK_MARKERS = (
+    "currently available devices:",
+    "currently available devices",
+    "available devices:",
+    "available devices",
+)
 _CONFIG_LINE_RE = re.compile(
     r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*=\s*(?P<value>.*)$"
 )
@@ -207,36 +218,119 @@ def find_virtual_display_id(
 ) -> str | None:
     """提取虚拟屏永久 ``{device_id}``。
 
-    优先解析 Sunshine 启动日志中与虚拟显示器相关的设备行；
-    日志不可用时调用安装目录下的 ``dxgi-info.exe``。
-    返回带花括号的完整 ID（如 ``{a1b2c3...}``）；未找到返回 None。
+    优先从 Sunshine 日志末尾向前解析显示器 JSON 块，并按虚拟屏关键词选择；
+    日志不可用时再用 ``dxgi-info.exe`` 兜底。返回值始终保留花括号。
     """
-    for candidate in _log_candidates(status, log_path):
-        if not candidate.is_file():
-            continue
+    candidates = _log_candidates(status, log_path)
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    if existing:
+        for candidate in existing:
+            runner.log(f"[Sunshine] 检查日志文件：{candidate}")
+    else:
+        runner.log(
+            "[Sunshine] 未找到 Sunshine 日志，已检查："
+            + " | ".join(str(candidate) for candidate in candidates)
+        )
+
+    fallback_id: str | None = None
+    fallback_source: str | None = None
+    for candidate in existing:
         try:
             text = _read_tail(candidate)
         except OSError as exc:
             runner.log(f"[Sunshine] 读取日志失败 {candidate}: {exc}")
             continue
-        found = _best_guid_from_text(text)
-        if found is not None:
-            runner.log(f"[Sunshine] 从日志提取虚拟屏 ID: {found}（{candidate.name}）")
-            return found
+
+        blocks = _display_blocks(text)
+        if not blocks:
+            runner.log(f"[Sunshine] 日志中未找到「Currently available devices」JSON 块：{candidate}")
+            legacy = _best_guid_from_text(text)
+            if legacy is not None:
+                runner.log(
+                    f"[Sunshine] 从旧格式日志行提取虚拟屏 ID：{legacy}"
+                    f"（{candidate.name}）"
+                )
+                return legacy
+            continue
+
+        for index, devices in enumerate(blocks):
+            if index == 0:
+                runner.log(f"[Sunshine] 最近显示器列表（{candidate.name}）：")
+                _log_devices(runner, devices)
+            matched, reason = _match_virtual_device(devices)
+            if matched is not None:
+                device_id = _device_id(matched)
+                if device_id:
+                    if index > 0:
+                        runner.log(f"[Sunshine] 匹配显示器块（从末尾第 {index + 1} 个）：")
+                        _log_devices(runner, devices)
+                    runner.log(
+                        f"[Sunshine] 从日志选择虚拟屏 ID：{device_id}（{reason}）"
+                    )
+                    return device_id
+            if fallback_id is None:
+                candidate_device = _fallback_display_device(devices)
+                candidate_id = (
+                    _device_id(candidate_device) if candidate_device else None
+                )
+                if candidate_id:
+                    fallback_id = candidate_id
+                    fallback_source = f"{candidate.name}（从末尾第 {index + 1} 个显示器块）"
+
+    if fallback_id is not None:
+        runner.log(
+            f"[Sunshine] 未命中虚拟屏关键词，选择非主屏候选：{fallback_id}"
+            f"（{fallback_source}）"
+        )
+        return fallback_id
 
     dxgi = _find_dxgi_info(status)
     if dxgi is not None:
+        runner.log("[Sunshine] 日志中未提取到虚拟屏，尝试 dxgi-info.exe…")
         result = runner.query([str(dxgi)], timeout_s=20)
         if result.ok:
+            runner.log("[Sunshine] dxgi-info.exe 原始显示器输出：\n" + result.stdout.strip())
             found = _best_guid_from_text(result.stdout)
             if found is not None:
                 runner.log(f"[Sunshine] 从 dxgi-info.exe 提取虚拟屏 ID: {found}")
                 return found
+            runner.log(
+                "[Sunshine] dxgi-info.exe 输出中没有 device_id；"
+                "若当前是「仅电脑屏幕」，虚拟屏可能未激活。"
+            )
         else:
-            runner.log(f"[Sunshine] dxgi-info.exe 执行失败: {_tail(result.stderr or result.stdout)}")
+            runner.log(
+                f"[Sunshine] dxgi-info.exe 执行失败: "
+                f"{_tail(result.stderr or result.stdout)}"
+            )
 
-    runner.log("[Sunshine] 未能提取虚拟屏 device_id，将不写入 output_name")
+    runner.log("[Sunshine] 未能提取虚拟屏 device_id，将保留现有 output_name")
     return None
+
+
+def configured_output_name(
+    runner: CommandRunner,
+    status: SunshineStatus,
+) -> str | None:
+    """读取 ``sunshine.conf`` 中已有的有效 ``output_name``。
+
+    用于本次未找到新设备时沿用旧值，避免把用户手工配置清空。
+    """
+    config_path = status.config_path
+    if config_path is None or not Path(config_path).is_file():
+        return None
+    try:
+        state = read_config(runner, Path(config_path))
+    except (OSError, UnicodeError) as exc:
+        runner.log(f"[Sunshine] 读取现有 sunshine.conf 失败：{exc}")
+        return None
+    value = str(state.values.get(KEY_OUTPUT_NAME, "")).strip()
+    if not value:
+        return None
+    device_id = _normalize_device_id(value)
+    if device_id is None:
+        runner.log(f"[Sunshine] 现有 output_name 不是有效 GUID，忽略：{value}")
+    return device_id
 
 
 def default_resolution_mode(monitor_count: int) -> ResolutionMode:
@@ -487,18 +581,202 @@ def _strip_inline_comment(value: str) -> str:
 
 
 def _log_candidates(status: SunshineStatus, explicit: Path | None) -> list[Path]:
-    candidates: list[Path] = []
     if explicit is not None:
-        candidates.append(Path(explicit))
+        # 显式指定日志时只读取该文件，便于测试与故障复现。
+        return [Path(explicit)]
+    candidates: list[Path] = [DEFAULT_INSTALL_DIR / "config" / LOG_FILENAME]
     if status.config_path is not None:
         candidates.append(Path(status.config_path).parent / LOG_FILENAME)
     if status.install_dir is not None:
         candidates.append(Path(status.install_dir) / "config" / LOG_FILENAME)
         candidates.append(Path(status.install_dir) / LOG_FILENAME)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        base = Path(local_app_data) / "LizardByte" / "Sunshine"
+        candidates.append(base / LOG_FILENAME)
+        candidates.append(base / "config" / LOG_FILENAME)
     program_files = os.environ.get("ProgramFiles")
     if program_files:
         candidates.append(Path(program_files) / "Sunshine" / "config" / LOG_FILENAME)
     return _dedupe_paths(candidates)
+
+
+def _display_blocks(text: str) -> list[list[dict[str, Any]]]:
+    """从日志末尾向前解析显示器 JSON 块，最新块排在最前。"""
+    decoder = json.JSONDecoder()
+    lowered = text.casefold()
+    cursor = len(text)
+    blocks: list[list[dict[str, Any]]] = []
+    seen_starts: set[int] = set()
+
+    while cursor > 0:
+        positions: list[tuple[int, int]] = []
+        for marker in _DISPLAY_BLOCK_MARKERS:
+            found = lowered.rfind(marker, 0, cursor)
+            if found >= 0:
+                positions.append((found, found + len(marker)))
+        if not positions:
+            break
+        latest = max(position for position, _end in positions)
+        # "available devices" 是 "currently available devices" 的子串，
+        # 同一处命中时合并为一个标记组，避免重复解析同一 JSON 块。
+        group_start = min(
+            position
+            for position, _end in positions
+            if latest - position <= 80
+        )
+        marker_end = max(
+            end
+            for position, end in positions
+            if position >= group_start
+        )
+        cursor = group_start
+        start = _find_json_start(text, marker_end)
+        if start is None or start in seen_starts:
+            continue
+        seen_starts.add(start)
+        try:
+            value, _end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+        devices = _as_device_list(value)
+        if devices:
+            blocks.append(devices)
+    return blocks
+
+
+def _find_json_start(text: str, start: int) -> int | None:
+    limit = min(len(text), start + 512)
+    for index in range(start, limit):
+        char = text[index]
+        if char in "[{":
+            return index
+        if not char.isspace():
+            return None
+    return None
+
+
+def _as_device_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        raw = value
+    elif isinstance(value, dict):
+        nested = value.get("devices")
+        raw = nested if isinstance(nested, list) else [value]
+    else:
+        return []
+    devices: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict) and _device_id(item):
+            devices.append(item)
+    return devices
+
+
+def _device_id(device: Mapping[str, Any] | None) -> str | None:
+    if not device:
+        return None
+    return _normalize_device_id(str(device.get("device_id") or ""))
+
+
+def _normalize_device_id(value: str) -> str | None:
+    match = _GUID_RE.search(value or "")
+    if match:
+        return match.group(0)
+    match = _BARE_GUID_RE.search(value or "")
+    if match:
+        return "{" + match.group(0) + "}"
+    return None
+
+
+def _device_search_text(device: Mapping[str, Any]) -> str:
+    # 整个设备对象都参与关键词匹配，兼容 friendly_name / display_name /
+    # info / edid（VDD 的 edid 制造商 ID 为 MTT）以及未来新增字段。
+    return json.dumps(device, ensure_ascii=False, default=str).casefold()
+
+
+def _is_primary(device: Mapping[str, Any]) -> bool | None:
+    info = device.get("info")
+    if isinstance(info, dict):
+        value = info.get("primary")
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _display_name(device: Mapping[str, Any]) -> str:
+    return str(device.get("display_name") or "")
+
+
+def _preferred_device(devices: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    for device in devices:
+        if _is_primary(device) is False:
+            return device
+    return devices[0]
+
+
+def _match_virtual_device(
+    devices: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    for keyword in _VIRTUAL_DISPLAY_KEYWORDS:
+        matches = [
+            device
+            for device in devices
+            if keyword in _device_search_text(device)
+        ]
+        if matches:
+            return _preferred_device(matches), f"关键词 {keyword}"
+    return None, ""
+
+
+def _fallback_display_device(
+    devices: Sequence[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not devices:
+        return None
+    if len(devices) == 1:
+        only = devices[0]
+        # 单屏且明显是主屏（通常是物理 \\.\DISPLAY1）时不要误写 output_name。
+        if _is_primary(only) is True:
+            return None
+        if (
+            _is_primary(only) is None
+            and _display_name(only).casefold() == r"\\.\display1"
+        ):
+            return None
+        return only
+    non_primary = [
+        device for device in devices if _is_primary(device) is False
+    ]
+    if non_primary:
+        return non_primary[0]
+    non_default = [
+        device
+        for device in devices
+        if _display_name(device).casefold() != r"\\.\display1"
+    ]
+    if non_default:
+        return non_default[0]
+    return None
+
+
+def _log_devices(
+    runner: CommandRunner,
+    devices: Sequence[dict[str, Any]],
+) -> None:
+    if not devices:
+        runner.log("[Sunshine] 显示器列表为空")
+        return
+    for index, device in enumerate(devices, start=1):
+        primary = _is_primary(device)
+        runner.log(
+            f"[Sunshine] 显示器[{index}] "
+            f"friendly_name={device.get('friendly_name')!r} "
+            f"display_name={_display_name(device)!r} "
+            f"device_id={_device_id(device)} primary={primary}"
+        )
+    runner.log(
+        "[Sunshine] 原始显示器列表：\n"
+        + json.dumps(devices, ensure_ascii=False, indent=2, default=str)
+    )
 
 
 def _find_dxgi_info(status: SunshineStatus) -> Path | None:
@@ -529,11 +807,15 @@ def _best_guid_from_text(text: str) -> str | None:
     saw_display = False
 
     for line in text.splitlines():
-        matches = _GUID_RE.findall(line)
+        matches = [
+            normalized
+            for guid in _GUID_RE.findall(line)
+            if (normalized := _normalize_device_id(guid)) is not None
+        ]
         if not matches:
             continue
         unique.update(matches)
-        lowered = line.lower()
+        lowered = line.casefold()
         if "display" in lowered or "output" in lowered or "monitor" in lowered:
             saw_display = True
         score = _line_score(lowered)
@@ -553,8 +835,10 @@ def _line_score(lowered: str) -> int:
     score = 0
     for marker, weight in (
         ("virtual", 5),
-        ("vdd", 4),
-        ("idd", 3),
+        ("vdd", 5),
+        ("mtt", 5),
+        ("idd", 4),
+        ("indirect", 4),
         ("display", 2),
         ("output", 1),
         ("monitor", 1),
