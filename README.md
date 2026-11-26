@@ -2,7 +2,7 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-v0.2.2%20%C2%B7%20release-green)
+![status](https://img.shields.io/badge/status-v0.2.3%20%C2%B7%20release-green)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -31,7 +31,7 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 |---|---|
 | **A. 环境与网络体检** | 管理员、GPU、Sunshine、VDD、网络五项逐项检测；四态徽章与实时进度；区分有线 / 无线 IPv4；提取全局 IPv6（排除 `fe80::` 与临时地址）；校园网 AP 隔离提示；`ms_tcpip6` 绑定一键修复；`netsh advfirewall` 放行 Sunshine |
 | **B. 虚拟显示器与预设** | 检测 VDD 安装；内置 iPad / Android 平板 / 手机 / iPhone 预设；支持多选与自定义分辨率；安全注入 `vdd_settings.xml`；重载驱动；`DisplaySwitch /internal` 防止窗口跑偏 |
-| **C. Sunshine 自动化** | 检测安装目录与服务；从日志或 `dxgi-info.exe` 提取虚拟屏 `{device_id}`；写入 `address_family`、`output_name`、`dd_configuration_option`、`dd_config_revert_on_disconnect` 与分辨率策略；一键重启服务 |
+| **C. Sunshine 自动化** | 检测安装目录与服务；从最新启动日志或 `dxgi-info.exe` 提取虚拟屏 `{device_id}`；写入 `address_family`、`output_name`、`dd_configuration_option`、`dd_config_revert_on_disconnect`、`dd_resolution_option=manual/auto` 与 `dd_manual_resolution`；一键重启服务 |
 | **D. 电源保活** | 插电永不休眠、10 分钟后自动关屏；保存原配置并支持一键还原 |
 | **E. 四步向导 UI** | 环境自检 → 设备定制 → 后台执行（实时日志 / 进度 / 回滚）→ 分平台配对指引 |
 | **F. 依赖自动安装** | 解析 GitHub 最新 Sunshine / VDD Release，匹配 CPU 架构，校验文件大小后安装；可选 GitHub 加速代理；失败时打开浏览器手动下载或选择本地安装包 |
@@ -64,6 +64,7 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | v0.2.0 | 深浅色主题、Step 1 逐项检测、Sunshine / VDD 自动下载安装 | ✅ 已完成（123 个测试） |
 | v0.2.1 | 修复 Step 3 虚拟屏 `device_id` 提取、执行顺序与日志诊断 | ✅ 已完成（135 个测试） |
 | v0.2.2 | 移除日志标题依赖、轮询新增日志、增加 PnP 与末尾日志诊断 | ✅ 已完成（138 个测试） |
+| v0.2.3 | 固定分辨率、localhost 配对页、Step 4 分平台指引与 Artemis 推荐 | ✅ 已完成（145 个测试） |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
 Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引。
@@ -71,6 +72,18 @@ Phase 4 完成单文件打包：内嵌 `asInvoker` UAC 清单与 VERSIONINFO，�
 v0.2.0 新增主题管理、五项环境逐项检测和依赖自动安装，测试总数达到 **123 个**（含下载安装核心、Worker 与对话框离屏测试）。
 v0.2.1 修复 Step 3 在虚拟屏未激活时提取 `device_id` 失败的问题，测试总数达到 **135 个**。
 v0.2.2 根据朋友电脑实测日志进一步修复日志标题依赖与启动慢问题，测试总数达到 **138 个**。
+v0.2.3 完成全新电脑与安卓平板实测修复，覆盖固定分辨率、localhost 配对页、中文菜单指引与 Artemis 客户端推荐，测试总数达到 **145 个**。
+
+### v0.2.3 修复内容
+
+- **最新启动日志解析**：以 `Sunshine version:` / `Starting system tray` 为启动边界，只扫描最新启动后的显示器 JSON；使用花括号栈处理嵌套 `info` 和字符串内花括号。
+- **虚拟屏名称匹配**：优先匹配 `friendly_name` 中的 `VDD` / `MTT` / `Virtual` / `Indirect` / `Idd`（不区分大小写），未命中时选择非 `\\.\DISPLAY1` 的候选。
+- **固定分辨率**：单设备写入 `dd_resolution_option = manual` 与 `dd_manual_resolution = <宽>x<高>`，首次进入虚拟屏不再停留在 800×600；多设备写入 `auto`。
+- **localhost 配对页**：Step 4 明确区分「填进 Moonlight 的 PC 地址」与「本机打开填 PIN」；配对页固定为 `https://localhost:<端口>/pin`，自定义 `port` 时按 `port + 1` 计算。
+- **分平台指引**：Android 使用中文菜单（「本地」分辨率、首选 HEVC、视频帧速调节、将触控屏作为触控板使用等），iPadOS / iOS 使用英文菜单；内置 `error -5`、黑边、证书警告等排雷项。
+- **Artemis 推荐**：Android 指引新增 Artemis（Moonlight 开源增强版）与官方 Moonlight 双选项，并提供可点击的 GitHub Releases 按钮；README 同步补充客户端推荐与致谢。
+
+> `v0.2.3` 的 Windows 单文件程序为 `CampusStreamHelper-v0.2.3.exe`；构建后会在 `dist\` 下生成，并输出 SHA256。
 
 ### v0.2.2 修复内容
 
@@ -105,9 +118,9 @@ v0.2.2 根据朋友电脑实测日志进一步修复日志标题依赖与启动�
 
 ### 普通用户（下载 exe）
 
-1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.2.exe`。
+1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.3.exe`。
 2. 可选校验：在下载目录运行
-   `Get-FileHash .\CampusStreamHelper-v0.2.2.exe -Algorithm SHA256`，
+   `Get-FileHash .\CampusStreamHelper-v0.2.3.exe -Algorithm SHA256`，
    与 Release 说明中的 SHA256 对比。
 3. 双击启动；程序会自己检测权限并提示提权。也可以右键 → **以管理员身份运行**。
 4. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
@@ -137,7 +150,7 @@ python -m venv .venv
 # 4. 或只检测、不写入：Dry-Run 模式
 .\.venv\Scripts\python.exe main.py --dry-run
 
-# 5. 运行全部测试（当前 138 个）
+# 5. 运行全部测试（当前 145 个）
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 Remove-Item Env:\QT_QPA_PLATFORM
@@ -146,9 +159,9 @@ Remove-Item Env:\QT_QPA_PLATFORM
 .\packaging\build.ps1
 ```
 
-> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.2.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
+> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.3.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
 >
-> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.2 单文件为 49,244,869 字节（约 47.0 MiB），构建完成后终端会打印实际体积与 SHA256。
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.3 单文件为 49,253,477 字节（约 47.0 MiB），构建完成后终端会打印实际体积与 SHA256。
 
 ## 发布流程（维护者）
 
@@ -159,31 +172,31 @@ Remove-Item Env:\QT_QPA_PLATFORM
 # 2. 打包（自动测试 + 冒烟测试，输出体积与 SHA256）
 .\packaging\build.ps1
 
-# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.2）
-.\dist\CampusStreamHelper-v0.2.2.exe --dry-run
+# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.3）
+.\dist\CampusStreamHelper-v0.2.3.exe --dry-run
 
 # 4. 提交源码（dist/、build/ 与 *.bak 已被 .gitignore 排除）
 git add README.md core packaging tests ui
-git commit -m "build: 发布 v0.2.2"
+git commit -m "build: 发布 v0.2.3"
 
 # 5. 合并修复分支到 main
 git switch main
 git pull --ff-only origin main
-git merge --no-ff fix/sunshine-log-polling -m "merge: 发布 v0.2.2"
+git merge --no-ff fix/v0.2.3 -m "merge: 发布 v0.2.3"
 git push origin main
 
-# 6. 打附注标签并推送（v0.2.1 已发布，保持不动）
-git tag -a v0.2.2 -m "CampusStream Helper v0.2.2"
-git push origin v0.2.2
+# 6. 打附注标签并推送（v0.2.1 / v0.2.2 已发布，保持不动）
+git tag -a v0.2.3 -m "CampusStream Helper v0.2.3"
+git push origin v0.2.3
 ```
 
-随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.2` → 上传
-`dist\CampusStreamHelper-v0.2.2.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
+随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.3` → 上传
+`dist\CampusStreamHelper-v0.2.3.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
 
 > `git pull --ff-only` 只允许快进合并；如果失败，说明远端 `main` 有新提交，应先查看差异再处理。
-> **v0.2.1 已经发布，不要删除、移动或用强制推送覆盖它的标签。** 本次只新增 `v0.2.2`。
-> `dist\` 中可能残留旧的 `CampusStreamHelper-v0.2.1.exe`，那是本地构建产物，不要上传或替换到 v0.2.1 Release；本次只上传 `CampusStreamHelper-v0.2.2.exe`。
-> 如果 `v0.2.2` 标签只在本地打错且尚未推送，可先 `git tag -d v0.2.2` 再重打；若已经推送，不要改写历史，改用 `v0.2.3` 发布修正。
+> **v0.2.1 / v0.2.2 已经发布，不要删除、移动或用强制推送覆盖它们的标签。** 本次只新增 `v0.2.3`。
+> `dist\` 中可能残留旧版本 exe，它们只是本地构建产物；本次只上传 `CampusStreamHelper-v0.2.3.exe`。
+> 如果 `v0.2.3` 标签只在本地打错且尚未推送，可先 `git tag -d v0.2.3` 再重打；若已经推送，不要改写历史，改用 `v0.2.4` 发布修正。
 > 全程不要使用 `git push --force`。
 
 ## 四步向导会做什么
@@ -191,7 +204,24 @@ git push origin v0.2.2
 1. **环境自检**：后台逐项检测管理员权限、GPU、Sunshine、VDD 与网络，显示实时进度、四态徽章、完成时间和修复按钮；检测到 Sunshine / VDD 缺失时可直接打开自动下载安装。
 2. **客户端与设备定制**：选择 iPadOS / Android 平板 / Android 手机 / iPhone，勾选机型分辨率或填写自定义分辨率；勾选防火墙放行与防休眠。
 3. **一键配置执行**：后台线程执行，实时滚动日志、进度条、失败项提示与一键回滚。
-4. **配对与避坑指引**：展示推荐连接 IP（有线优先）与 Sunshine 配对页入口，并按平台给出 Moonlight 设置清单。
+4. **配对与避坑指引**：分开显示「填进 Moonlight 的 PC 地址」与「本机 `https://localhost:47990/pin` 配对页」，并按 Android 中文菜单 / iPadOS 与 iOS 英文菜单分别给出设置清单和报错排雷。
+
+## 客户端推荐（Android 平板 / 手机）
+
+### 首选：Artemis（Moonlight 开源增强版）
+
+尤其推荐国产安卓平板使用：
+
+- 下载地址：<https://github.com/ClassicOldSong/moonlight-android/releases>
+- 兼容 Sunshine，支持自定义非 16:9 分辨率；
+- 解码器兼容选项更丰富，可有效避开原版 Moonlight 在国产平板上选择 `1920×1200` 等分辨率时出现的「视频解码器初始化失败 / error -5」；
+- 提供双指缩放、悬浮控制球等更适合平板办公的功能。
+
+### 官方原版：Moonlight Android
+
+- 下载地址：<https://github.com/moonlight-stream/moonlight-android/releases>
+- 若使用原版并遇到「本地 / 原生分辨率 / 90 FPS」报 `error -5`，且切换 HEVC 后仍无效，建议直接换用 Artemis；
+- 如果继续使用原版：客户端分辨率保持 `1080p`，同时把电脑虚拟屏设为 `1920×1080`；或勾选「将画面拉伸至全屏」。
 
 ## 项目结构
 
@@ -339,7 +369,7 @@ PyInstaller 单文件程序也可能被启发式引擎误报；你可以直接�
 
 ### 8. 支持同时连接平板和手机吗？
 
-支持。向导可一次注入多个分辨率；多设备场景建议选择「跟随客户端请求分辨率与刷新率自动切换」。单设备默认「不改变分辨率」，以保住 Windows 缩放比例。
+支持。向导可一次注入多个分辨率；多设备场景建议选择「跟随客户端自动切换」，Sunshine 会写入 `dd_resolution_option = auto`。单设备默认「固定为所选分辨率」，写入 `dd_resolution_option = manual` 和 `dd_manual_resolution = 宽x高`，首次进入虚拟屏就使用 Step 2 的分辨率，不再停留在 800×600。客户端 Moonlight 的「优化游戏设置 / Optimize Game Settings」需要保持开启。
 
 ### 9. 支持 macOS / Linux / 电视盒子吗？
 
@@ -389,10 +419,11 @@ PyInstaller 单文件程序也可能被启发式引擎误报；你可以直接�
   <https://github.com/LizardByte/Sunshine> · <https://docs.lizardbyte.dev/projects/sunshine/>
 - **Moonlight** — 跨平台串流客户端  
   <https://moonlight-stream.org/> · <https://github.com/moonlight-stream>
+- **Artemis** — ClassicOldSong 维护的 Moonlight Android 开源增强版，针对安卓平板的分辨率、解码器兼容与触控操作做了增强：<https://github.com/ClassicOldSong/moonlight-android/releases>
 - **Virtual Display Driver** — Windows 虚拟显示器驱动  
   <https://github.com/VirtualDrivers/Virtual-Display-Driver>
 
-感谢 LizardByte、Moonlight Game Streaming Project 以及 Virtual Display Driver 的维护者与贡献者。本项目与上述项目官方无隶属关系，也不代表其立场。
+感谢 LizardByte、Moonlight Game Streaming Project、ClassicOldSong（Artemis）以及 Virtual Display Driver 的维护者与贡献者。本项目与上述项目官方无隶属关系，也不代表其立场。
 
 ## 许可证
 
