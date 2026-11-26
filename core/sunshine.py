@@ -9,12 +9,13 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterator, Literal, Mapping, Sequence
 
 from core.common import CommandRunner, OperationResult
 
 AddressFamily = Literal["ipv4", "ipv6", "both"]
-ResolutionMode = Literal["do_not_change", "follow_client"]
+# manual: 固定为 Step 2 选择的分辨率；auto: 跟随 Moonlight 客户端请求。
+ResolutionMode = Literal["manual", "auto"]
 DisplayConfiguration = Literal[
     "disabled",
     "verify_only",
@@ -43,6 +44,7 @@ KEY_OUTPUT_NAME = "output_name"
 KEY_DD_CONFIGURATION = "dd_configuration_option"
 KEY_DD_REVERT = "dd_config_revert_on_disconnect"
 KEY_DD_RESOLUTION = "dd_resolution_option"
+KEY_DD_MANUAL_RESOLUTION = "dd_manual_resolution"
 KEY_DD_REFRESH_RATE = "dd_refresh_rate_option"
 
 _GUID_RE = re.compile(
@@ -54,6 +56,8 @@ _BARE_GUID_RE = re.compile(
 )
 _VIRTUAL_DISPLAY_KEYWORDS = ("vdd", "mtt", "virtual", "indirect", "idd")
 _DEVICE_ID_KEY_RE = re.compile(r'"device_id"\s*:', re.IGNORECASE)
+_STARTUP_VERSION_RE = re.compile(r"Sunshine version:", re.IGNORECASE)
+_STARTUP_TRAY_RE = re.compile(r"Starting system tray", re.IGNORECASE)
 _DISPLAY_PNP_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 Get-PnpDevice -Class Display |
@@ -99,9 +103,9 @@ class SunshineConfigPlan:
     - ``output_name`` → ``output_name``
     - ``display_configuration`` → ``dd_configuration_option``
     - ``revert_on_disconnect`` → ``dd_config_revert_on_disconnect = enabled|disabled``
-    - ``resolution_mode=do_not_change`` → ``dd_resolution_option=disabled``、
-      ``dd_refresh_rate_option=disabled``
-    - ``resolution_mode=follow_client`` → ``dd_resolution_option=auto``、
+    - ``resolution_mode=manual`` → ``dd_resolution_option=manual``、
+      ``dd_manual_resolution=<宽>x<高>``、``dd_refresh_rate_option=disabled``
+    - ``resolution_mode=auto`` → ``dd_resolution_option=auto``、
       ``dd_refresh_rate_option=auto``
     """
 
@@ -109,7 +113,8 @@ class SunshineConfigPlan:
     output_name: str | None = None
     display_configuration: DisplayConfiguration = "ensure_only_display"
     revert_on_disconnect: bool = True
-    resolution_mode: ResolutionMode = "do_not_change"
+    resolution_mode: ResolutionMode = "manual"
+    manual_resolution: tuple[int, int] | None = None
 
 
 def detect_sunshine(
@@ -245,13 +250,14 @@ def find_virtual_display_id(
             runner.log(f"[Sunshine] 读取日志失败 {candidate}: {exc}")
             continue
 
-        devices = _scan_display_devices(text)
+        latest = _latest_startup_text(text)
+        devices = _scan_display_devices(latest)
         if not devices:
             runner.log(
-                f"[Sunshine] 日志中没有解析到包含 "
+                f"[Sunshine] 最新启动后的日志中没有解析到包含 "
                 f"device_id/display_name/friendly_name 的对象：{candidate}"
             )
-            legacy = _best_guid_from_text(text)
+            legacy = _best_guid_from_text(latest)
             if legacy is not None:
                 runner.log(
                     f"[Sunshine] 从旧格式日志行提取虚拟屏 ID：{legacy}"
@@ -411,7 +417,7 @@ def wait_for_virtual_display_id(
             if '"device_id"' not in new_text:
                 continue
             saw_device_key = True
-            devices = _scan_display_devices(new_text)
+            devices = _scan_display_devices(_latest_startup_text(new_text))
             matched, reason = _match_virtual_device(devices)
             if matched is not None:
                 device_id = _device_id(matched)
@@ -478,8 +484,8 @@ def report_display_diagnostics(
 
 
 def default_resolution_mode(monitor_count: int) -> ResolutionMode:
-    """单设备默认不改变分辨率；多设备默认跟随客户端请求。"""
-    return "do_not_change" if monitor_count <= 1 else "follow_client"
+    """单设备默认固定为所选分辨率；多设备默认跟随客户端请求。"""
+    return "manual" if monitor_count <= 1 else "auto"
 
 
 def build_config_plan(
@@ -487,6 +493,7 @@ def build_config_plan(
     address_family: AddressFamily,
     output_name: str | None,
     resolution_mode: ResolutionMode,
+    manual_resolution: tuple[int, int] | None = None,
     revert_on_disconnect: bool = True,
 ) -> SunshineConfigPlan:
     """组装待写入的配置计划，不产生任何副作用。"""
@@ -496,6 +503,7 @@ def build_config_plan(
         display_configuration="ensure_only_display",
         revert_on_disconnect=revert_on_disconnect,
         resolution_mode=resolution_mode,
+        manual_resolution=manual_resolution,
     )
 
 
@@ -590,13 +598,50 @@ def restart_service(runner: CommandRunner, status: SunshineStatus) -> OperationR
     )
 
 
-def pairing_url(ip: str, *, port: int = PAIRING_PORT) -> str:
-    """生成 Sunshine Web 配对页地址，例如 ``https://192.168.1.10:47990``。
+def pairing_port(status: SunshineStatus | None = None) -> int:
+    """返回 Sunshine 本机 Web UI 端口。
 
-    传入 IPv6 时会自动加方括号。
+    默认 Web UI 为 ``port + 1``（默认 47990）。如果 ``sunshine.conf``
+    自定义了 ``port``，则按该值加一计算，避免打开错误端口。
     """
-    host = f"[{ip}]" if ":" in ip else ip
-    return f"https://{host}:{port}"
+    config_path = status.config_path if status is not None else None
+    if config_path is None or not Path(config_path).is_file():
+        return PAIRING_PORT
+    try:
+        text = Path(config_path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return PAIRING_PORT
+    for line in text.splitlines():
+        match = _CONFIG_LINE_RE.match(line)
+        if not match or match.group("key").strip().lower() != "port":
+            continue
+        value = _strip_inline_comment(match.group("value").strip())
+        try:
+            base_port = int(value)
+        except ValueError:
+            return PAIRING_PORT
+        if 1 <= base_port <= 65534:
+            return base_port + 1
+        return PAIRING_PORT
+    return PAIRING_PORT
+
+
+def pairing_url(
+    status: SunshineStatus | None = None,
+    *,
+    port: int | None = None,
+) -> str:
+    """生成仅在**本机**打开的 Sunshine 配对页地址。
+
+    Sunshine 默认只允许 localhost 访问 Web UI，因此不要使用局域网 IP：
+    ``https://localhost:<端口>/pin``。
+
+    Args:
+        status: 用于读取 ``sunshine.conf`` 中自定义的 ``port``。
+        port: 直接指定 Web UI 端口，主要用于测试或特殊部署。
+    """
+    resolved_port = port if port is not None else pairing_port(status)
+    return f"https://localhost:{resolved_port}/pin"
 
 
 # ----------------------------------------------------------------------
@@ -701,9 +746,16 @@ def _plan_updates(plan: SunshineConfigPlan) -> dict[str, str]:
     }
     if plan.output_name:
         updates[KEY_OUTPUT_NAME] = plan.output_name.strip()
-    if plan.resolution_mode == "follow_client":
+    if plan.resolution_mode == "auto":
         updates[KEY_DD_RESOLUTION] = "auto"
         updates[KEY_DD_REFRESH_RATE] = "auto"
+    elif plan.manual_resolution is not None and all(
+        value > 0 for value in plan.manual_resolution
+    ):
+        width, height = plan.manual_resolution
+        updates[KEY_DD_RESOLUTION] = "manual"
+        updates[KEY_DD_MANUAL_RESOLUTION] = f"{width}x{height}"
+        updates[KEY_DD_REFRESH_RATE] = "disabled"
     else:
         updates[KEY_DD_RESOLUTION] = "disabled"
         updates[KEY_DD_REFRESH_RATE] = "disabled"
@@ -745,55 +797,78 @@ def _log_candidates(status: SunshineStatus, explicit: Path | None) -> list[Path]
     return _dedupe_paths(candidates)
 
 
+def _latest_startup_text(text: str) -> str:
+    """只保留最新一次 Sunshine 启动之后的日志。
+
+    优先使用 ``Sunshine version:`` 作为启动边界；旧版本日志没有该行时，
+    退化为 ``Starting system tray``；两者都没有则扫描全文。
+    """
+    starts = [
+        match.start()
+        for pattern in (_STARTUP_VERSION_RE, _STARTUP_TRAY_RE)
+        for match in pattern.finditer(text)
+    ]
+    if starts:
+        return text[max(starts):]
+    return text
+
+
 def _scan_display_devices(text: str) -> list[dict[str, Any]]:
     """扫描任意位置的显示器 JSON 对象，不依赖固定标题文本。
 
-    从日志末尾向前查找 ``"device_id"``，再用 JSON 解码器从最近的 ``{``
-    开始配对解析完整对象，因此 ``info`` 等嵌套对象不会截断结果。
-    最新出现的设备排在前面，并按归一化后的 device_id 去重。
+    使用花括号栈配对完整对象，跳过字符串内的 ``{`` / ``}``，因此
+    ``"info": {...}`` 等嵌套结构不会截断解析。最新出现的设备排在前面，
+    并按归一化后的 device_id 去重。
     """
-    decoder = json.JSONDecoder()
     devices: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for match in reversed(list(_DEVICE_ID_KEY_RE.finditer(text))):
-        device = _device_object_at(text, match.start(), decoder)
-        if device is None:
+    for start, end in reversed(list(_iter_json_objects(text))):
+        if _DEVICE_ID_KEY_RE.search(text, start, end) is None:
             continue
-        if "display_name" not in device and "friendly_name" not in device:
+        try:
+            value = json.loads(text[start:end])
+        except (json.JSONDecodeError, UnicodeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        if "display_name" not in value and "friendly_name" not in value:
             # 排除 Scheduling display device configuration 这类只有 device_id 的配置块。
             continue
-        device_id = _device_id(device)
+        device_id = _device_id(value)
         if device_id is None or device_id in seen:
             continue
         seen.add(device_id)
-        devices.append(device)
+        devices.append(value)
         if len(devices) >= 64:
             break
     return devices
 
 
-def _device_object_at(
-    text: str,
-    key_position: int,
-    decoder: json.JSONDecoder,
-) -> dict[str, Any] | None:
-    start = key_position
-    for _ in range(64):
-        start = text.rfind("{", 0, start)
-        if start < 0:
-            return None
-        try:
-            value, _end = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
+def _iter_json_objects(text: str) -> Iterator[tuple[int, int]]:
+    """按括号栈产出完整 JSON 对象 ``(start, end)``。
+
+    忽略字符串内部的花括号，并正确处理反斜杠转义；未闭合的对象不会产出，
+    便于从被截断的日志中继续使用上一个完整设备块。
+    """
+    stack: list[int] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
             continue
-        if (
-            isinstance(value, dict)
-            and _device_id(value)
-            and ("display_name" in value or "friendly_name" in value)
-        ):
-            return value
-    return None
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append(index)
+        elif char == "}" and stack:
+            yield stack.pop(), index + 1
 
 
 def _read_range(path: Path, start: int, end: int) -> bytes:
@@ -837,6 +912,10 @@ def _display_name(device: Mapping[str, Any]) -> str:
     return str(device.get("display_name") or "")
 
 
+def _friendly_name(device: Mapping[str, Any]) -> str:
+    return str(device.get("friendly_name") or "")
+
+
 def _preferred_device(devices: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for device in devices:
         if _is_primary(device) is False:
@@ -847,6 +926,16 @@ def _preferred_device(devices: Sequence[dict[str, Any]]) -> dict[str, Any]:
 def _match_virtual_device(
     devices: Sequence[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str]:
+    # 首选 friendly_name，符合 VDD / MTT / Virtual / Indirect / Idd 的命名习惯。
+    for keyword in _VIRTUAL_DISPLAY_KEYWORDS:
+        matches = [
+            device
+            for device in devices
+            if keyword in _friendly_name(device).casefold()
+        ]
+        if matches:
+            return _preferred_device(matches), f"friendly_name 关键词 {keyword}"
+    # 兼容 friendly_name 为空、但 EDID / info 中带 MTT 等标记的驱动。
     for keyword in _VIRTUAL_DISPLAY_KEYWORDS:
         matches = [
             device
@@ -854,7 +943,7 @@ def _match_virtual_device(
             if keyword in _device_search_text(device)
         ]
         if matches:
-            return _preferred_device(matches), f"关键词 {keyword}"
+            return _preferred_device(matches), f"对象关键词 {keyword}"
     return None, ""
 
 

@@ -16,7 +16,7 @@ class SetupPlan:
     platforms: tuple[Platform, ...]
     monitors: tuple[MonitorSpec, ...]
     address_family: AddressFamily = "ipv4"
-    resolution_mode: ResolutionMode = "do_not_change"
+    resolution_mode: ResolutionMode = "manual"
     enable_firewall: bool = True
     apply_power_profile: bool = True
     reload_driver: bool = True

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from core.common import OperationResult
 from core.network import NetworkReport
-from core.plan import SetupPlan
+from core.plan import SetupPlan, SetupSummary
 from core.sunshine import SunshineStatus
 from core.vdd import MonitorSpec, VddStatus
 from ui.workers import SetupWorker
@@ -75,7 +75,7 @@ class SetupWorkerOrderTest(unittest.TestCase):
         *,
         found_id: str | None,
         existing_id: str | None = None,
-    ) -> tuple[list, list, list, list]:
+    ) -> tuple[list, list, list, SetupSummary]:
         sunshine, vdd, network = self._statuses()
         if existing_id is not None:
             self.config.write_text(
@@ -151,10 +151,11 @@ class SetupWorkerOrderTest(unittest.TestCase):
             summaries[0].success,
             summaries[0].failed_outcomes,
         )
-        return calls, sleeps, captured_plans, summaries[0].outcomes
+        return calls, sleeps, captured_plans, summaries[0]
 
     def test_execution_order_restarts_before_extracting_id(self) -> None:
-        calls, sleeps, plans, outcomes = self._run(found_id=VDD_ID)
+        calls, sleeps, plans, summary = self._run(found_id=VDD_ID)
+        outcomes = summary.outcomes
 
         self.assertEqual(
             calls,
@@ -170,6 +171,12 @@ class SetupWorkerOrderTest(unittest.TestCase):
         )
         self.assertEqual(len(sleeps), 10)  # 重载后固定等待 2.0s，每次 0.2s
         self.assertEqual(plans[0].output_name, VDD_ID)
+        self.assertEqual(plans[0].resolution_mode, "manual")
+        self.assertEqual(plans[0].manual_resolution, (2360, 1640))
+        self.assertEqual(
+            summary.pairing_url,
+            "https://localhost:47990/pin",
+        )
         by_key = {outcome.key: outcome for outcome in outcomes}
         self.assertTrue(by_key["service_initial"].ok)
         self.assertTrue(by_key["device_id"].ok)
@@ -177,13 +184,13 @@ class SetupWorkerOrderTest(unittest.TestCase):
         self.assertTrue(by_key["service"].ok)
 
     def test_falls_back_to_existing_output_name(self) -> None:
-        _calls, _sleeps, plans, outcomes = self._run(
+        _calls, _sleeps, plans, summary = self._run(
             found_id=None,
             existing_id=EXISTING_ID,
         )
 
         self.assertEqual(plans[0].output_name, EXISTING_ID)
-        by_key = {outcome.key: outcome for outcome in outcomes}
+        by_key = {outcome.key: outcome for outcome in summary.outcomes}
         self.assertTrue(by_key["device_id"].ok)
         self.assertIn("沿用现有 output_name", by_key["device_id"].message)
 

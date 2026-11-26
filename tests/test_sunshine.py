@@ -19,6 +19,7 @@ from core.sunshine import (
     default_resolution_mode,
     detect_sunshine,
     find_virtual_display_id,
+    pairing_port,
     pairing_url,
     read_config,
     snapshot_log_sizes,
@@ -111,7 +112,7 @@ class SunshineConfigTest(unittest.TestCase):
             plan = build_config_plan(
                 address_family="ipv4",
                 output_name="{11111111-1111-1111-1111-111111111111}",
-                resolution_mode="follow_client",
+                resolution_mode="auto",
             )
             result = apply_config(runner, _status(config), plan)
             self.assertTrue(result.ok)
@@ -126,6 +127,24 @@ class SunshineConfigTest(unittest.TestCase):
             self.assertIn("dd_config_revert_on_disconnect = enabled", text)
             self.assertIn("dd_resolution_option = auto", text)
             self.assertIn("dd_refresh_rate_option = auto", text)
+
+    def test_single_device_writes_manual_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "sunshine.conf"
+            config.write_text(CONFIG_TEXT, encoding="utf-8")
+            plan = build_config_plan(
+                address_family="ipv4",
+                output_name=VDD_ID,
+                resolution_mode="manual",
+                manual_resolution=(1920, 1200),
+            )
+            result = apply_config(CommandRunner(), _status(config), plan)
+            self.assertTrue(result.ok)
+
+            text = config.read_text(encoding="utf-8")
+            self.assertIn("dd_resolution_option = manual", text)
+            self.assertIn("dd_manual_resolution = 1920x1200", text)
+            self.assertIn("dd_refresh_rate_option = disabled", text)
 
     def test_dry_run_does_not_modify_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -160,7 +179,7 @@ class SunshineConfigTest(unittest.TestCase):
                 _status(config),
                 SunshineConfigPlan(
                     output_name=None,
-                    resolution_mode="do_not_change",
+                    resolution_mode="manual",
                 ),
             )
             self.assertTrue(result.ok)
@@ -261,6 +280,59 @@ class SunshineDetectionTest(unittest.TestCase):
             )
             self.assertEqual(found, VDD_ID_2)
 
+    def test_latest_startup_discards_old_device_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                "[2026-11-26 13:00:00.000]: Info: Sunshine version: old\n"
+                + display_block(
+                    [device(VDD_ID, "", "VDD by MTT", primary=False)]
+                )
+                + "[2026-11-26 13:10:00.000]: Info: Sunshine version: new\n"
+                + display_block(
+                    [device(VDD_ID_2, "", "VDD by MTT", primary=False)]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID_2)
+
+    def test_nested_info_and_braces_in_strings_do_not_truncate_device(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            virtual = device(VDD_ID, "", "VDD by MTT", primary=False)
+            virtual["info"] = {
+                "primary": False,
+                "resolution": {"width": 1920, "height": 1200},
+                "note": "nested } brace and \" quote",
+            }
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        virtual,
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID)
+
     def test_json_log_accepts_keyword_variants(self) -> None:
         variants = (
             ("VDD", "Other"),
@@ -299,6 +371,38 @@ class SunshineDetectionTest(unittest.TestCase):
                     log_path=log,
                 )
                 self.assertEqual(found, VDD_ID)
+
+    def test_friendly_name_match_beats_other_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                display_block(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            "Virtual Panel",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        device(
+                            VDD_ID,
+                            "",
+                            "Indirect Display",
+                            primary=False,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            # 物理屏的 display_name 含 Virtual，但 friendly_name 不含关键词；
+            # 应优先选择 friendly_name 命中 Indirect 的虚拟屏。
+            self.assertEqual(found, VDD_ID)
 
     def test_json_log_falls_back_to_non_primary_display(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -588,13 +692,24 @@ class SunshineDetectionTest(unittest.TestCase):
         status = detect_sunshine(runner, search_roots=[])
         self.assertEqual(status.service_state, "stopped")
 
-    def test_pairing_url(self) -> None:
-        self.assertEqual(pairing_url("192.168.1.10"), "https://192.168.1.10:47990")
-        self.assertEqual(pairing_url("2001:da8::1"), "https://[2001:da8::1]:47990")
+    def test_pairing_url_uses_localhost_and_pin(self) -> None:
+        self.assertEqual(pairing_url(), "https://localhost:47990/pin")
+        self.assertEqual(pairing_url(port=49000), "https://localhost:49000/pin")
+
+    def test_pairing_url_uses_custom_config_port_plus_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "sunshine.conf"
+            config.write_text("port = 50000\n", encoding="utf-8")
+            status = _status(config)
+            self.assertEqual(pairing_port(status), 50001)
+            self.assertEqual(
+                pairing_url(status),
+                "https://localhost:50001/pin",
+            )
 
     def test_default_resolution_mode(self) -> None:
-        self.assertEqual(default_resolution_mode(1), "do_not_change")
-        self.assertEqual(default_resolution_mode(2), "follow_client")
+        self.assertEqual(default_resolution_mode(1), "manual")
+        self.assertEqual(default_resolution_mode(2), "auto")
 
 
 if __name__ == "__main__":
