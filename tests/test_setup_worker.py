@@ -97,12 +97,21 @@ class SetupWorkerOrderTest(unittest.TestCase):
             calls.append("reload_driver")
             return OperationResult.success("reload ok")
 
+        def snapshot_log(*_args, **_kwargs):
+            calls.append("snapshot_log")
+            return {}
+
         def restart_service(*_args, **_kwargs):
             nonlocal restart_count
             restart_count += 1
             name = "restart_initial" if restart_count == 1 else "restart_final"
             calls.append(name)
             return OperationResult.success(name)
+
+        def wait_log(*_args, **_kwargs):
+            calls.append("wait_log")
+            self.assertEqual(restart_count, 1)
+            return found_id
 
         def find_id(*_args, **_kwargs):
             calls.append("find_id")
@@ -127,6 +136,11 @@ class SetupWorkerOrderTest(unittest.TestCase):
             patch("ui.workers.apply_resolutions", side_effect=apply_resolutions),
             patch("ui.workers.reload_driver", side_effect=reload_driver),
             patch("ui.workers.restart_service", side_effect=restart_service),
+            patch("ui.workers.snapshot_log_sizes", side_effect=snapshot_log),
+            patch(
+                "ui.workers.wait_for_virtual_display_id",
+                side_effect=wait_log,
+            ),
             patch("ui.workers.find_virtual_display_id", side_effect=find_id),
             patch("ui.workers.apply_config", side_effect=apply_sunshine_config),
         ):
@@ -147,13 +161,14 @@ class SetupWorkerOrderTest(unittest.TestCase):
             [
                 "apply_resolutions",
                 "reload_driver",
+                "snapshot_log",
                 "restart_initial",
-                "find_id",
+                "wait_log",
                 "apply_config",
                 "restart_final",
             ],
         )
-        self.assertEqual(len(sleeps), 10 + 12)  # 2.0s + 2.4s，每次 0.2s
+        self.assertEqual(len(sleeps), 10)  # 重载后固定等待 2.0s，每次 0.2s
         self.assertEqual(plans[0].output_name, VDD_ID)
         by_key = {outcome.key: outcome for outcome in outcomes}
         self.assertTrue(by_key["service_initial"].ok)
