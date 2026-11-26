@@ -2,7 +2,7 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-v0.2.0%20%C2%B7%20release-green)
+![status](https://img.shields.io/badge/status-v0.2.1%20%C2%B7%20release-green)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -62,11 +62,23 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ✅ 已完成（43 个测试） |
 | Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ✅ 已完成（48 个测试） |
 | v0.2.0 | 深浅色主题、Step 1 逐项检测、Sunshine / VDD 自动下载安装 | ✅ 已完成（123 个测试） |
+| v0.2.1 | 修复 Step 3 虚拟屏 `device_id` 提取、执行顺序与日志诊断 | ✅ 已完成（135 个测试） |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
 Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引。
 Phase 4 完成单文件打包：内嵌 `asInvoker` UAC 清单与 VERSIONINFO，构建后自动做离屏冒烟测试。
 v0.2.0 新增主题管理、五项环境逐项检测和依赖自动安装，测试总数达到 **123 个**（含下载安装核心、Worker 与对话框离屏测试）。
+v0.2.1 修复 Step 3 在虚拟屏未激活时提取 `device_id` 失败的问题，测试总数达到 **135 个**。
+
+### v0.2.1 修复内容
+
+- **重排 Step 3 执行顺序**：写入 VDD XML → 重载驱动 → 等待 2 秒 → 首次重启 Sunshine 枚举显示器 → 等待 2.5 秒 → 从日志提取 `device_id` → 写入 `sunshine.conf` → 再次重启生效。
+- **修复 Sunshine 日志解析**：从日志末尾向前解析 `Currently available devices:` 的 JSON 显示器列表，关联同一设备的 `device_id`、`display_name`、`friendly_name`、`info` 与 `edid`。
+- **增强虚拟屏识别**：优先匹配 `VDD`、`MTT`、`Virtual`、`Idd`、`Indirect` 关键词；没有关键词时选择非主屏候选，并保留完整花括号 `{...}`。
+- **增强失败诊断**：Step 3 会输出实际日志路径、最近显示器列表、格式化 JSON 与 `dxgi-info.exe` 原始输出。
+- **保留现有配置**：如果本次未找到新设备，但 `sunshine.conf` 已有有效的 `output_name = {...}`，会沿用并提示，不清空原值。
+
+> `v0.2.1` 的 Windows 单文件程序为 `CampusStreamHelper-v0.2.1.exe`；构建后会在 `dist\` 下生成，并输出 SHA256。
 
 ### v0.2.0 更新内容
 
@@ -81,9 +93,9 @@ v0.2.0 新增主题管理、五项环境逐项检测和依赖自动安装，测�
 
 ### 普通用户（下载 exe）
 
-1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.0.exe`。
+1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.1.exe`。
 2. 可选校验：在下载目录运行
-   `Get-FileHash .\CampusStreamHelper-v0.2.0.exe -Algorithm SHA256`，
+   `Get-FileHash .\CampusStreamHelper-v0.2.1.exe -Algorithm SHA256`，
    与 Release 说明中的 SHA256 对比。
 3. 双击启动；程序会自己检测权限并提示提权。也可以右键 → **以管理员身份运行**。
 4. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
@@ -113,7 +125,7 @@ python -m venv .venv
 # 4. 或只检测、不写入：Dry-Run 模式
 .\.venv\Scripts\python.exe main.py --dry-run
 
-# 5. 运行全部测试（当前 123 个）
+# 5. 运行全部测试（当前 135 个）
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 Remove-Item Env:\QT_QPA_PLATFORM
@@ -122,9 +134,9 @@ Remove-Item Env:\QT_QPA_PLATFORM
 .\packaging\build.ps1
 ```
 
-> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.0.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
+> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.1.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
 >
-> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.0 单文件约 47.0 MB，构建完成后终端会打印实际体积与 SHA256。
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.1 单文件约 47.0 MB，构建完成后终端会打印实际体积与 SHA256。
 
 ## 发布流程（维护者）
 
@@ -135,29 +147,29 @@ Remove-Item Env:\QT_QPA_PLATFORM
 # 2. 打包（自动测试 + 冒烟测试，输出体积与 SHA256）
 .\packaging\build.ps1
 
-# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.0）
-.\dist\CampusStreamHelper-v0.2.0.exe --dry-run
+# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.1）
+.\dist\CampusStreamHelper-v0.2.1.exe --dry-run
 
 # 4. 提交源码（dist/、build/ 与 *.bak 已被 .gitignore 排除）
 git add README.md core packaging tests
-git commit -m "build: 发布 v0.2.0"
+git commit -m "build: 发布 v0.2.1"
 
-# 5. 合并功能分支到 main
+# 5. 合并修复分支到 main
 git switch main
 git pull --ff-only origin main
-git merge --no-ff feat/v0.2-ux-autodownload -m "merge: 发布 v0.2.0"
+git merge --no-ff fix/sunshine-device-id -m "merge: 发布 v0.2.1"
 git push origin main
 
 # 6. 打附注标签并推送
-git tag -a v0.2.0 -m "CampusStream Helper v0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "CampusStream Helper v0.2.1"
+git push origin v0.2.1
 ```
 
-随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.0` → 上传
-`dist\CampusStreamHelper-v0.2.0.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
+随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.1` → 上传
+`dist\CampusStreamHelper-v0.2.1.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
 
 > `git pull --ff-only` 只允许快进合并；如果失败，说明远端 `main` 有新提交，应先查看差异再处理。
-> 不要使用 `git push --force`。若标签写错，用 `git tag -d v0.2.0` 删除本地标签后重新打，再推送。
+> 不要使用 `git push --force`。若标签写错，用 `git tag -d v0.2.1` 删除本地标签后重新打，再推送。
 
 ## 四步向导会做什么
 
