@@ -182,6 +182,17 @@ class EnvironmentStep(QWidget):
         else:
             self._render_mode("检测中", "muted")
 
+    def refresh_theme(self) -> None:
+        """主题切换后重新应用 InfoRow 的动态 tone 颜色。"""
+        for rows in (
+            self.system_rows,
+            self.sunshine_rows,
+            self.vdd_rows,
+            self.network_rows,
+        ):
+            for row in rows.values():
+                row.refresh_theme()
+
     def set_error(self, message: str) -> None:
         self.refresh_button.setEnabled(True)
         self.status_label.setText("检测失败，请查看下方信息后重试。")

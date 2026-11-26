@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,6 +28,7 @@ from ui.steps.step_devices import DevicesStep
 from ui.steps.step_environment import EnvironmentStep
 from ui.steps.step_execute import ExecuteStep
 from ui.steps.step_guide import GuideStep
+from ui.theme import ThemeManager, ThemeSwitcher
 from ui.widgets import make_button, repolish
 from ui.workers import DetectionWorker, EnvironmentData, FunctionWorker
 
@@ -80,8 +81,15 @@ class WizardWindow(QMainWindow):
         *,
         force_dry_run: bool = False,
         auto_detect: bool = True,
+        theme: ThemeManager | None = None,
     ) -> None:
         super().__init__()
+        if theme is None:
+            app = QApplication.instance()
+            if app is None:
+                raise RuntimeError("创建窗口前必须先创建 QApplication")
+            theme = ThemeManager(app)
+        self.theme = theme
         self.dry_run = force_dry_run
         self.env_data: EnvironmentData | None = None
         self.summary: SetupSummary | None = None
@@ -171,6 +179,9 @@ class WizardWindow(QMainWindow):
         self.step_counter = QLabel()
         self.step_counter.setObjectName("Muted")
         header.addWidget(self.step_counter)
+        header.addSpacing(10)
+        self.theme_switcher = ThemeSwitcher(self.theme)
+        header.addWidget(self.theme_switcher)
         content_layout.addLayout(header)
 
         self.stack = QStackedWidget()
@@ -213,6 +224,7 @@ class WizardWindow(QMainWindow):
         self.dry_run_check.toggled.connect(self._on_dry_run_toggled)
         self.back_button.clicked.connect(self._go_back)
         self.next_button.clicked.connect(self._go_next)
+        self.theme.changed.connect(self._on_theme_changed)
 
     # ------------------------------------------------------------------
     # 属性 / 导航
@@ -456,6 +468,18 @@ class WizardWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 模式 / 提权 / 单项操作
     # ------------------------------------------------------------------
+
+    def _on_theme_changed(self, _effective: str) -> None:
+        self.environment_step.refresh_theme()
+        self.guide_step.refresh_theme()
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() in (
+            QEvent.Type.ApplicationActivate,
+            QEvent.Type.WindowActivate,
+        ):
+            self.theme.refresh_system()
+        return super().event(event)
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         self.dry_run = checked

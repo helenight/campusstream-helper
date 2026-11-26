@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.plan import SetupSummary
+from ui.theme import active_tokens
 from ui.widgets import (
     Banner,
     Card,
@@ -138,6 +139,10 @@ class GuideStep(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
+    def refresh_theme(self) -> None:
+        if self._summary is not None:
+            self.tips.setHtml(self._build_tips(self._summary))
+
     def clear(self) -> None:
         self._summary = None
         self.ip_label.setText("—")
@@ -256,12 +261,18 @@ class GuideStep(QWidget):
             f"Windows 缩放建议 <b>{item.windows_scaling_percent}%</b></li>"
             for item in summary.plan.monitors
         )
+        tokens = active_tokens()
         sections = [
             "<style>"
-            "body { font-family: 'Microsoft YaHei UI'; font-size: 12px; color: #0F172A; }"
+            "body {"
+            " font-family: 'Microsoft YaHei UI';"
+            " font-size: 12px;"
+            f" color: {tokens.text};"
+            "}"
             "h3 { margin: 10px 0 6px 0; font-size: 14px; }"
             "li { margin-bottom: 5px; }"
-            ".muted { color: #64748B; }"
+            f"a {{ color: {tokens.primary}; }}"
+            f".muted {{ color: {tokens.muted}; }}"
             "</style>",
             f"<h3>本次设备与缩放</h3><ul>{device_items}</ul>",
         ]

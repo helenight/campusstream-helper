@@ -34,6 +34,7 @@ class PackagingTest(unittest.TestCase):
         for needle in (
             "device_presets.json",
             "icon.ico",
+            "check.svg",
             "app.manifest",
             "version_info.txt",
             "console=False",

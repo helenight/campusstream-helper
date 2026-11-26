@@ -218,6 +218,7 @@ class DevicesStep(QWidget):
     def _populate_devices(self) -> None:
         for platform, title in PLATFORM_TABS:
             list_widget = QListWidget()
+            list_widget.setObjectName("DeviceList")
             list_widget.setSpacing(2)
             list_widget.itemChanged.connect(self._on_selection_changed)
             self._lists[platform] = list_widget
