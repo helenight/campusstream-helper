@@ -53,12 +53,14 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| Phase 1 | 项目骨架、设备预设、接口定义、Git 初始化 | ✅ 骨架完成（Git 待推送） |
-| Phase 2 | `core/` 全部底层模块 + Dry-Run 测试 | ⏳ 计划中 |
+| Phase 1 | 项目骨架、设备预设、接口定义、Git 初始化 | ✅ 已完成 |
+| Phase 2 | `core/` 全部底层模块 + Dry-Run 测试 | ✅ 已完成（39 个测试） |
 | Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ⏳ 计划中 |
 | Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ⏳ 计划中 |
 
-> Phase 1 的 `main.py` 只打印版本号；图形界面将在 Phase 3 接入。
+Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
+
+> 当前 `main.py` 只打印版本号；图形界面将在 Phase 3 接入。
 
 ## 快速开始
 
@@ -69,7 +71,7 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 3. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
 4. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
 
-> 当前仓库处于 Phase 1，尚未发布可执行文件；请先按下方开发者方式运行源码。
+> 当前仓库处于 Phase 2，核心模块已完成；尚未发布可执行文件，请先按下方开发者方式运行源码与测试。
 
 ### 开发者（当前可用）
 
@@ -117,7 +119,13 @@ streamhelper/
 │  └─ __init__.py              # Phase 3：wizard.py / workers.py / steps/
 ├─ tests/
 │  ├─ __init__.py
-│  └─ test_device_presets.py   # 预设数据校验
+│  ├─ fakes.py                 # 测试用假 Runner
+│  ├─ test_common.py           # Dry-Run / 备份 / 原子写入
+│  ├─ test_device_presets.py   # 预设数据校验
+│  ├─ test_network.py          # 网络解析 / IPv6 / 防火墙
+│  ├─ test_power.py            # 电源读取 / 应用 / 还原
+│  ├─ test_sunshine.py         # 配置合并 / device_id
+│  └─ test_vdd.py              # XML 注入 / 回滚
 ├─ main.py                     # 程序入口（Phase 3 接入 GUI）
 ├─ requirements.txt
 ├─ requirements-dev.txt
