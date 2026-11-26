@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from core import __version__
 from core.common import default_state_dir, resource_path
 from core.privileges import is_admin, relaunch_as_admin
-from ui.styles import apply_stylesheet
+from ui.theme import ThemeManager
 from ui.wizard import WizardWindow
 
 
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("CampusStream Helper Contributors")
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setWindowIcon(QIcon(str(resource_path("assets/icon.ico"))))
-    apply_stylesheet(app)
+    theme = ThemeManager(app)
     _install_crash_handler()
 
     force_dry_run = "--dry-run" in args or smoke_test
@@ -99,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         force_dry_run = dry_run
 
-    window = WizardWindow(force_dry_run=force_dry_run, auto_detect=not smoke_test)
+    window = WizardWindow(
+        force_dry_run=force_dry_run,
+        auto_detect=not smoke_test,
+        theme=theme,
+    )
     window.show()
     if smoke_test:
         app.processEvents()

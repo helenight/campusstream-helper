@@ -20,6 +20,13 @@ class PackagingTest(unittest.TestCase):
         self.assertIn("<requestedExecutionLevel", text)
         self.assertNotIn('level="requireAdministrator"', text)
 
+    def test_manifest_version_matches_core_version(self) -> None:
+        text = (PACKAGING / "app.manifest").read_text(encoding="utf-8")
+        numbers = [int(part) for part in __version__.split(".")]
+        numbers += [0] * (4 - len(numbers))
+        expected = ".".join(str(number) for number in numbers)
+        self.assertIn(f'version="{expected}"', text)
+
     def test_version_info_matches_core_version(self) -> None:
         text = (PACKAGING / "version_info.txt").read_text(encoding="utf-8")
         self.assertIn(f"'ProductVersion', '{__version__}'", text)
@@ -34,6 +41,7 @@ class PackagingTest(unittest.TestCase):
         for needle in (
             "device_presets.json",
             "icon.ico",
+            "check.svg",
             "app.manifest",
             "version_info.txt",
             "console=False",

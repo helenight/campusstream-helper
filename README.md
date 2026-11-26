@@ -2,11 +2,11 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-v0.1.0%20%C2%B7%20release-green)
+![status](https://img.shields.io/badge/status-v0.2.0%20%C2%B7%20release-green)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机** 远程控制 Windows PC 的用户，自动完成网络诊断、虚拟显示器分辨率注入、Sunshine 配置、防火墙放行与电源保活，并生成对应客户端的配对与避坑指引。
+CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机** 远程控制 Windows PC 的用户，自动完成依赖检测与安装、网络诊断、虚拟显示器分辨率注入、Sunshine 配置、防火墙放行与电源保活，并生成对应客户端的配对与避坑指引。界面支持跟随系统的深色 / 浅色主题。
 
 ---
 
@@ -16,6 +16,7 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 
 - 分不清有线 / 无线 IPv4，IPv6 地址里混着 `fe80::` 和临时地址；
 - 校园网开了 AP 隔离，平板能上网却连不到宿舍 PC；
+- 不知道 Sunshine / VDD 应该下载哪个版本，GitHub 直连还很慢；
 - 忘了给 `sunshine.exe` 放行防火墙，Moonlight 一直转圈；
 - 手改 `vdd_settings.xml` 加分辨率，格式错一个标签就黑屏；
 - 不知道虚拟屏的永久 `{device_id}`，`output_name` 写错导致串流黑屏；
@@ -28,11 +29,13 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 
 | 模块 | 能力 |
 |---|---|
-| **A. 环境与网络体检** | 区分有线 / 无线 IPv4；提取全局 IPv6（排除 `fe80::` 与临时地址）；校园网 AP 隔离提示；`ms_tcpip6` 绑定一键修复；`netsh advfirewall` 放行 Sunshine |
+| **A. 环境与网络体检** | 管理员、GPU、Sunshine、VDD、网络五项逐项检测；四态徽章与实时进度；区分有线 / 无线 IPv4；提取全局 IPv6（排除 `fe80::` 与临时地址）；校园网 AP 隔离提示；`ms_tcpip6` 绑定一键修复；`netsh advfirewall` 放行 Sunshine |
 | **B. 虚拟显示器与预设** | 检测 VDD 安装；内置 iPad / Android 平板 / 手机 / iPhone 预设；支持多选与自定义分辨率；安全注入 `vdd_settings.xml`；重载驱动；`DisplaySwitch /internal` 防止窗口跑偏 |
 | **C. Sunshine 自动化** | 检测安装目录与服务；从日志或 `dxgi-info.exe` 提取虚拟屏 `{device_id}`；写入 `address_family`、`output_name`、`dd_configuration_option`、`dd_config_revert_on_disconnect` 与分辨率策略；一键重启服务 |
 | **D. 电源保活** | 插电永不休眠、10 分钟后自动关屏；保存原配置并支持一键还原 |
 | **E. 四步向导 UI** | 环境自检 → 设备定制 → 后台执行（实时日志 / 进度 / 回滚）→ 分平台配对指引 |
+| **F. 依赖自动安装** | 解析 GitHub 最新 Sunshine / VDD Release，匹配 CPU 架构，校验文件大小后安装；可选 GitHub 加速代理；失败时打开浏览器手动下载或选择本地安装包 |
+| **G. 深浅色主题** | 跟随系统 / 浅色 / 深色三档切换；主窗口、对话框、输入框、日志与状态徽章全部适配 |
 
 ## 适用人群
 
@@ -43,11 +46,12 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 
 ## 安全边界与设计原则
 
-- **不打包、不篡改上游源码**：本工具只做检测、引导下载和配置写入，Sunshine、Moonlight、Virtual Display Driver 仍由各自官方渠道分发。
-- **最小权限**：仅在防火墙、服务、驱动重载、`powercfg` 等必要操作时要求管理员权限。
+- **不篡改上游安装包**：Sunshine、Moonlight、Virtual Display Driver 仍由各自官方 GitHub Release 分发；本工具只按 API 解析最新资产、校验文件大小并调用官方安装方式。
+- **最小权限**：仅在防火墙、服务、驱动重载、`powercfg` 等必要操作时要求管理员权限；自动安装前会再次确认，非管理员运行时默认建议先 Dry-Run。
 - **写入前备份**：任何配置文件修改前自动生成 `*.bak`，回滚时优先使用备份。
-- **Dry-Run 模拟运行**：开启后所有写操作只记录日志，不碰系统，方便开发与演示。
+- **Dry-Run 模拟运行**：开启后所有写操作只记录日志，不碰系统；自动安装只解析版本、下载链接与将执行的命令，不下载、不解压、不安装。
 - **可回滚**：配置写入、VDD 条目、电源设置与防火墙规则均提供还原路径。
+- **下载安全**：只接受 HTTPS 资产链接，按 GitHub API 返回的大小校验；ZIP 解压拒绝绝对路径、`..` 与符号链接，并保留已有 `vdd_settings.xml`。
 
 ## 当前开发进度
 
@@ -57,24 +61,35 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | Phase 2 | `core/` 全部底层模块 + Dry-Run 测试 | ✅ 已完成（39 个测试） |
 | Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ✅ 已完成（43 个测试） |
 | Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ✅ 已完成（48 个测试） |
+| v0.2.0 | 深浅色主题、Step 1 逐项检测、Sunshine / VDD 自动下载安装 | ✅ 已完成（123 个测试） |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
 Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引。
-Phase 4 完成单文件打包：内嵌 `asInvoker` UAC 清单与 VERSIONINFO，构建后自动做离屏冒烟测试；现有 39 个核心测试 + 4 个 UI 冒烟 + 5 个打包校验，共 48 个。
+Phase 4 完成单文件打包：内嵌 `asInvoker` UAC 清单与 VERSIONINFO，构建后自动做离屏冒烟测试。
+v0.2.0 新增主题管理、五项环境逐项检测和依赖自动安装，测试总数达到 **123 个**（含下载安装核心、Worker 与对话框离屏测试）。
 
-> `v0.1.0` 的 Windows 单文件程序已在本机成功构建并通过启动验证；发布文件为 `CampusStreamHelper-v0.1.0.exe`。
+### v0.2.0 更新内容
+
+- **全界面深浅色主题**：启动时读取系统主题，右上角可切换「跟随系统 / 浅色 / 深色」，切换立即生效并记住选择。
+- **Step 1 逐项检测进度**：管理员、GPU、Sunshine、VDD、网络五项分别显示 `⏳ 检测中…`、`✅ 已就绪`、`⚠️ 需处理`、`❌ 检测失败`，并带进度条、完成时间与修复入口。
+- **Sunshine / VDD 自动下载安装**：自动匹配 Windows AMD64 / ARM64 资产，显示下载百分比与实时速度；支持 GitHub 加速代理、取消、安装前确认、Dry-Run 与两种手动兜底。
+- **安装完成后自动复检**：安装成功会重新执行 Step 1 检测，环境卡片自动刷新。
+
+> `v0.2.0` 的 Windows 单文件程序为 `CampusStreamHelper-v0.2.0.exe`；构建后会在 `dist\` 下生成，并输出 SHA256。
 
 ## 快速开始
 
 ### 普通用户（下载 exe）
 
-1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.1.0.exe`。
+1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.0.exe`。
 2. 可选校验：在下载目录运行
-   `Get-FileHash .\CampusStreamHelper-v0.1.0.exe -Algorithm SHA256`，
+   `Get-FileHash .\CampusStreamHelper-v0.2.0.exe -Algorithm SHA256`，
    与 Release 说明中的 SHA256 对比。
 3. 双击启动；程序会自己检测权限并提示提权。也可以右键 → **以管理员身份运行**。
 4. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
-5. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
+5. 若 Step 1 检测到 Sunshine / VDD 缺失，点击「一键自动下载安装」；GitHub 访问慢时可在对话框填写加速代理，失败时也可手动下载或选择本地安装包。
+6. 右上角可切换「跟随系统 / 浅色 / 深色」主题。
+7. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
 
 > 单文件程序无需安装 Python，也不会写入注册表卸载项；运行状态、日志与回滚清单保存在 `%LOCALAPPDATA%\CampusStreamHelper`。
 >
@@ -98,7 +113,7 @@ python -m venv .venv
 # 4. 或只检测、不写入：Dry-Run 模式
 .\.venv\Scripts\python.exe main.py --dry-run
 
-# 5. 运行全部测试（39 个核心 + 4 个 UI 冒烟 + 5 个打包校验）
+# 5. 运行全部测试（当前 123 个）
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 Remove-Item Env:\QT_QPA_PLATFORM
@@ -107,39 +122,46 @@ Remove-Item Env:\QT_QPA_PLATFORM
 .\packaging\build.ps1
 ```
 
-> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.1.0.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设。
+> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.0.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
 >
-> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML 处理使用标准库。本机已用 Python 3.15 + PyInstaller 6.22.3 验证：单文件约 46.8 MB，冒烟测试退出码 0。
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.0 单文件约 47.0 MB，构建完成后终端会打印实际体积与 SHA256。
 
 ## 发布流程（维护者）
 
 ```powershell
-# 1. 版本号：同步修改 core/__init__.py 与 packaging/version_info.txt，并跑测试
+# 1. 版本号：同步修改 core/__init__.py、packaging/version_info.txt、
+#    packaging/app.manifest，并跑测试
 
 # 2. 打包（自动测试 + 冒烟测试，输出体积与 SHA256）
 .\packaging\build.ps1
 
-# 3. 本地验收
-.\dist\CampusStreamHelper-v0.1.0.exe --dry-run
+# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.0）
+.\dist\CampusStreamHelper-v0.2.0.exe --dry-run
 
-# 4. 提交源码（dist/ 与 build/ 已被 .gitignore 排除）
-git add .gitignore README.md core main.py assets packaging tests
-git commit -m "build: 发布 v0.1.0 单文件程序"
-git push
+# 4. 提交源码（dist/、build/ 与 *.bak 已被 .gitignore 排除）
+git add README.md core packaging tests
+git commit -m "build: 发布 v0.2.0"
 
-# 5. 打附注标签并推送
-git tag -a v0.1.0 -m "CampusStream Helper v0.1.0"
-git push origin v0.1.0
+# 5. 合并功能分支到 main
+git switch main
+git pull --ff-only origin main
+git merge --no-ff feat/v0.2-ux-autodownload -m "merge: 发布 v0.2.0"
+git push origin main
+
+# 6. 打附注标签并推送
+git tag -a v0.2.0 -m "CampusStream Helper v0.2.0"
+git push origin v0.2.0
 ```
 
-随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.1.0` → 上传
-`dist\CampusStreamHelper-v0.1.0.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
+随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.0` → 上传
+`dist\CampusStreamHelper-v0.2.0.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
 
-> 不要使用 `git push --force`。若标签写错，用 `git tag -d v0.1.0` 删除本地标签后重新打，再推送。
+> `git pull --ff-only` 只允许快进合并；如果失败，说明远端 `main` 有新提交，应先查看差异再处理。
+> 不要使用 `git push --force`。若标签写错，用 `git tag -d v0.2.0` 删除本地标签后重新打，再推送。
 
 ## 四步向导会做什么
 
-1. **环境自检**：管理员权限、电源方案、Sunshine 状态、VDD 状态、有线 / 无线网络与 IPv6 诊断。
+1. **环境自检**：后台逐项检测管理员权限、GPU、Sunshine、VDD 与网络，显示实时进度、四态徽章、完成时间和修复按钮；检测到 Sunshine / VDD 缺失时可直接打开自动下载安装。
 2. **客户端与设备定制**：选择 iPadOS / Android 平板 / Android 手机 / iPhone，勾选机型分辨率或填写自定义分辨率；勾选防火墙放行与防休眠。
 3. **一键配置执行**：后台线程执行，实时滚动日志、进度条、失败项提示与一键回滚。
 4. **配对与避坑指引**：展示推荐连接 IP（有线优先）与 Sunshine 配对页入口，并按平台给出 Moonlight 设置清单。
@@ -151,11 +173,15 @@ streamhelper/
 ├─ assets/
 │  ├─ device_presets.json      # 全平台机型预设（社区可 PR 扩充）
 │  ├─ icon.ico                 # exe / 窗口图标（多尺寸）
-│  └─ icon.png                 # README / 商店展示用
+│  ├─ icon.png                 # README / 商店展示用
+│  └─ check.svg                # 复选框 / 主题图标
 ├─ core/
 │  ├─ __init__.py              # 版本号
 │  ├─ common.py                # CommandRunner / Dry-Run / .bak 备份
 │  ├─ privileges.py            # UAC 检测与提权
+│  ├─ detection.py             # 五项检测模型与四态徽章
+│  ├─ gpu.py                   # WMI 显卡检测
+│  ├─ downloader.py            # GitHub Release 解析 / 下载 / 安装
 │  ├─ network.py               # 模块 A：网络、IPv6、防火墙
 │  ├─ vdd.py                   # 模块 B：VDD 检测、预设、XML 注入
 │  ├─ sunshine.py              # 模块 C：Sunshine 检测与配置
@@ -164,11 +190,13 @@ streamhelper/
 ├─ ui/
 │  ├─ __init__.py
 │  ├─ wizard.py                # 四步主窗口、导航与提权
-│  ├─ workers.py               # QThread 检测 / 执行 / 回滚 / 单项修复
-│  ├─ styles.py                # 深色侧栏 + 卡片式 QSS
+│  ├─ theme.py                 # 深浅色主题、系统探测与 QSS
+│  ├─ workers.py               # QThread 检测 / 执行 / 回滚 / 下载安装
 │  ├─ widgets.py               # Card / StatusPill / InfoRow / Banner
+│  ├─ dialogs/
+│  │  └─ package_dialog.py     # 自动下载安装对话框
 │  └─ steps/
-│     ├─ step_environment.py   # Step 1：环境自检
+│     ├─ step_environment.py   # Step 1：逐项环境自检
 │     ├─ step_devices.py       # Step 2：平台与分辨率
 │     ├─ step_execute.py       # Step 3：执行日志与回滚
 │     └─ step_guide.py         # Step 4：配对与分平台指引
@@ -183,10 +211,17 @@ streamhelper/
 │  ├─ fakes.py                 # 测试用假 Runner
 │  ├─ test_common.py           # Dry-Run / 备份 / 原子写入
 │  ├─ test_device_presets.py   # 预设数据校验
+│  ├─ test_detection.py        # 五项检测模型 / 汇总
+│  ├─ test_gpu.py              # WMI 显卡解析
+│  ├─ test_downloader.py       # 下载 / 校验 / ZIP 安全 / 安装
 │  ├─ test_network.py          # 网络解析 / IPv6 / 防火墙
 │  ├─ test_power.py            # 电源读取 / 应用 / 还原
 │  ├─ test_sunshine.py         # 配置合并 / device_id
 │  ├─ test_vdd.py              # XML 注入 / 回滚
+│  ├─ test_theme.py            # 对比度 / QSS / 主题切换
+│  ├─ test_step_environment.py # Step 1 进度与四态徽章
+│  ├─ test_package_worker.py   # 下载安装 Worker
+│  ├─ test_package_dialog.py   # 下载安装对话框
 │  ├─ test_ui_smoke.py         # 离屏 UI 冒烟（不弹窗、不写系统）
 │  └─ test_packaging.py        # 清单 / 版本 / 图标 / spec 资源校验
 ├─ main.py                     # 程序入口（GUI + 崩溃日志 + --dry-run / --smoke-test）
@@ -259,7 +294,7 @@ streamhelper/
 
 ### 4. 提示找不到 `vdd_settings.xml`？
 
-Virtual Display Driver 不包含在 Windows 中，需要单独安装。常见默认路径为 `C:\VirtualDisplayDriver\vdd_settings.xml`；若安装在别处，请在向导中手动选择。
+Virtual Display Driver 不包含在 Windows 中，需要单独安装。可以在 Step 1 点击「一键自动下载安装」；程序优先部署到已检测到的安装目录，未检测到时使用默认路径 `C:\VirtualDisplayDriver`。若驱动装在别处，请先用「选择本地安装包继续安装」或手动安装，再重新检测。
 
 ### 5. Moonlight 一直显示 offline？
 
@@ -287,9 +322,37 @@ PyInstaller 单文件程序也可能被启发式引擎误报；你可以直接�
 
 - 被修改的配置文件旁：`sunshine.conf.bak.<时间戳>`、`vdd_settings.xml.bak.<时间戳>`；
 - 电源与 VDD 回滚清单：`%LOCALAPPDATA%\CampusStreamHelper\`；
+- 自动下载的安装包：`%LOCALAPPDATA%\CampusStreamHelper\downloads\`；
 - 崩溃日志：`%LOCALAPPDATA%\CampusStreamHelper\crash.log`。
 
 这些文件可能包含本机 IP、设备 ID，已被 `.gitignore` 排除，请勿上传到公开仓库。
+
+### 11. 如何切换深色 / 浅色主题？
+
+主窗口右上角有主题切换按钮，可选择「跟随系统 / 浅色 / 深色」，切换立即生效并记住上次选择。默认跟随 Windows 的「应用模式」设置；如果系统接口无法判断，会读取注册表中的浅色 / 深色偏好。
+
+### 12. GitHub 下载很慢或自动下载失败怎么办？
+
+可以在下载对话框的「GitHub 加速代理」中填写形如 `https://gh-proxy.com/` 的前缀，程序会用它重试 API 与下载。仍然失败时：
+
+- 点「打开浏览器手动下载」，从官方 Releases 页面下载；
+- 点「选择本地安装包继续安装」，选择已下载的 `.msi` 或 `.zip`。
+
+下载文件会缓存在 `%LOCALAPPDATA%\CampusStreamHelper\downloads\`；大小与 GitHub API 不一致时会自动清理并重试。
+
+### 13. 自动安装安全吗？会覆盖我的配置吗？
+
+程序只从 GitHub Release 的 HTTPS 资产下载，按 API 返回大小校验，下载完成后再次确认才执行安装。Sunshine 使用官方 MSI 的 `msiexec /passive`；VDD 压缩包会先做 ZIP 路径安全检查，再部署到安装目录。已有 `vdd_settings.xml` 会保留，不会被压缩包内文件覆盖。
+
+建议先开启 Dry-Run：它只显示版本、下载链接与将执行的安装命令，不会下载、解压或改动系统。
+
+### 14. Step 1 显示「⚠️ 需处理」或「❌ 检测失败」怎么办？
+
+- **管理员权限**：点「以管理员身份重启」，或开启 Dry-Run 仅体验流程。
+- **Sunshine / VDD 未安装**：点「一键自动下载安装」。
+- **网络提示**：按卡片按钮启用 IPv6 绑定、放行防火墙，或查看 AP 隔离说明。
+- **GPU 检测失败**：通常是 WMI 查询异常或显卡驱动未就绪，更新驱动后点「重新检测」。
+- **某项检测失败**：卡片会显示具体原因；修复后点右上角「重新检测」。
 
 ## 上游项目与致谢
 

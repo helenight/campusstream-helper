@@ -3,12 +3,46 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
 from core.common import CommandRunner, OperationResult, default_state_dir
+from core.downloader import (
+    DEFAULT_VDD_DIR,
+    SUNSHINE_PAGE,
+    VDD_PAGE,
+    DownloadCancelled,
+    DownloadError,
+    HttpTransport,
+    ManualDownloadRequired,
+    Package,
+    PackagePlan,
+    default_download_dir,
+    download_asset,
+    install_command,
+    install_local_package,
+    install_sunshine,
+    install_vdd,
+    resolve_package,
+)
+from core.detection import (
+    DetectionItem,
+    DetectionState,
+    ITEM_ORDER,
+    admin_item,
+    failed_item,
+    gpu_item,
+    network_item,
+    running_item,
+    sunshine_item,
+    vdd_item,
+)
+from core.gpu import GpuInfo, detect_gpu
 from core.network import (
     NetworkReport,
     collect_network_report,
@@ -22,6 +56,7 @@ from core.power import (
     read_power_state,
     restore_previous_profile,
 )
+from core.privileges import is_admin
 from core.sunshine import (
     SunshineStatus,
     apply_config,
@@ -42,47 +77,438 @@ from core.vdd import (
 
 @dataclass(frozen=True, slots=True)
 class EnvironmentData:
-    """Step 1 一次完整环境检测的结果。"""
+    """Step 1 一次完整环境检测的结果；单项失败时对应字段为 ``None``。"""
 
-    network: NetworkReport
-    sunshine: SunshineStatus
-    vdd: VddStatus
+    network: NetworkReport | None
+    sunshine: SunshineStatus | None
+    vdd: VddStatus | None
     power: PowerState | None = None
+    gpu: GpuInfo | None = None
+    items: tuple[DetectionItem, ...] = ()
+    finished_at: datetime | None = None
     error: str | None = None
 
 
 class DetectionWorker(QObject):
-    """在后台执行只读环境检测，避免启动时界面卡顿。"""
+    """在后台逐项执行只读环境检测，并把每一项状态实时回传界面。"""
 
-    finished = Signal(object)
+    item_changed = Signal(object)   # DetectionItem
+    progress = Signal(int, int)     # completed, total
+    busy_changed = Signal(bool)
+    finished = Signal(object)       # EnvironmentData
     failed = Signal(str)
     log = Signal(str)
 
     def __init__(self, *, dry_run: bool = False) -> None:
         super().__init__()
         self._dry_run = dry_run
+        self._items: dict[str, DetectionItem] = {}
+
+    def _publish(self, item: DetectionItem) -> None:
+        self._items[item.key] = item
+        self.item_changed.emit(item)
+        completed = sum(
+            1
+            for current in self._items.values()
+            if current.state in {
+                DetectionState.READY,
+                DetectionState.WARNING,
+                DetectionState.FAILED,
+            }
+        )
+        self.progress.emit(completed, len(ITEM_ORDER))
 
     def run(self) -> None:
         runner = CommandRunner(dry_run=self._dry_run, log_sink=self.log.emit)
-        try:
-            sunshine = detect_sunshine(runner)
-            vdd = detect_vdd(runner)
-            network = collect_network_report(runner, sunshine_exe=sunshine.executable)
-            power: PowerState | None = None
+        self.busy_changed.emit(True)
+        sunshine: SunshineStatus | None = None
+        vdd: VddStatus | None = None
+        network: NetworkReport | None = None
+        power: PowerState | None = None
+        gpu: GpuInfo | None = None
+
+        def step(key: str, label: str, detect) -> DetectionItem:
+            self._publish(running_item(key))  # type: ignore[arg-type]
+            try:
+                return detect()
+            except Exception as exc:
+                runner.log(f"[检测] {label} 失败：{type(exc).__name__}: {exc}")
+                return failed_item(key, f"{type(exc).__name__}: {exc}")  # type: ignore[arg-type]
+
+        def detect_admin() -> DetectionItem:
+            nonlocal power
+            ok = is_admin()
             try:
                 power = read_power_state(runner)
             except Exception as exc:
                 runner.log(f"[电源] 读取失败，跳过电源状态展示: {exc}")
-            self.finished.emit(
-                EnvironmentData(
-                    network=network,
-                    sunshine=sunshine,
-                    vdd=vdd,
-                    power=power,
-                )
+            return admin_item(ok, power)
+
+        def detect_sunshine_item() -> DetectionItem:
+            nonlocal sunshine
+            sunshine = detect_sunshine(runner)
+            return sunshine_item(sunshine)
+
+        def detect_vdd_item() -> DetectionItem:
+            nonlocal vdd
+            vdd = detect_vdd(runner)
+            return vdd_item(vdd)
+
+        def detect_gpu_item() -> DetectionItem:
+            nonlocal gpu
+            gpu = detect_gpu(runner)
+            return gpu_item(gpu)
+
+        def detect_network_item() -> DetectionItem:
+            nonlocal network
+            network = collect_network_report(
+                runner,
+                sunshine_exe=sunshine.executable if sunshine else None,
             )
+            return network_item(
+                network,
+                can_add_firewall=bool(sunshine and sunshine.executable),
+            )
+
+        try:
+            self._publish(
+                step("admin", "管理员权限", detect_admin)
+            )
+            self._publish(
+                step("gpu", "显卡", detect_gpu_item)
+            )
+            self._publish(
+                step("sunshine", "Sunshine 服务端", detect_sunshine_item)
+            )
+            self._publish(
+                step("vdd", "虚拟显示驱动", detect_vdd_item)
+            )
+            self._publish(
+                step("network", "网络与防火墙", detect_network_item)
+            )
+            items = tuple(
+                self._items[key] for key in ITEM_ORDER if key in self._items
+            )
+            data = EnvironmentData(
+                network=network,
+                sunshine=sunshine,
+                vdd=vdd,
+                power=power,
+                gpu=gpu,
+                items=items,
+                finished_at=datetime.now().astimezone(),
+            )
+            self.busy_changed.emit(False)
+            self.finished.emit(data)
+        except Exception as exc:
+            self.busy_changed.emit(False)
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+@dataclass(frozen=True, slots=True)
+class PackageUpdate:
+    """下载安装对话框使用的进度快照。"""
+
+    stage: str
+    percent: int
+    received: int
+    total: int
+    speed_bps: float
+    message: str
+
+
+class PackageWorker(QObject):
+    """在 QThread 中解析、下载并安装 Sunshine / VDD。"""
+
+    update = Signal(object)          # PackageUpdate
+    log = Signal(str)
+    finished = Signal(object)        # OperationResult
+    failed = Signal(str)
+    cancelled = Signal()
+    manual_required = Signal(object)  # ManualDownloadRequired
+    confirm_required = Signal(str)
+
+    def __init__(
+        self,
+        package: Package,
+        *,
+        dry_run: bool = False,
+        proxy_prefix: str = "",
+        local_path: Path | None = None,
+        vdd_install_dir: Path | None = None,
+        download_dir: Path | None = None,
+        transport: HttpTransport | None = None,
+        require_confirmation: bool = True,
+        runner_factory: Callable[[bool], CommandRunner] | None = None,
+    ) -> None:
+        super().__init__()
+        self._package = package
+        self._dry_run = dry_run
+        self._proxy = proxy_prefix
+        self._local_path = Path(local_path) if local_path is not None else None
+        self._vdd_dir = Path(vdd_install_dir) if vdd_install_dir else DEFAULT_VDD_DIR
+        self._download_dir = (
+            Path(download_dir) if download_dir is not None else None
+        )
+        self._transport = transport
+        self._require_confirmation = require_confirmation
+        self._runner_factory = runner_factory or (
+            lambda dry: CommandRunner(dry_run=dry, log_sink=self.log.emit)
+        )
+        self._cancel = threading.Event()
+        self._approval = threading.Event()
+        self._approved = False
+        self._last_time: float | None = None
+        self._last_bytes = 0
+        self._last_emit = 0.0
+        self._speed = 0.0
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+        self._approved = False
+        self._approval.set()
+
+    def approve(self, approved: bool) -> None:
+        self._approved = bool(approved)
+        self._approval.set()
+
+    def run(self) -> None:
+        runner = self._runner_factory(self._dry_run)
+        try:
+            if self._cancel.is_set():
+                raise DownloadCancelled("下载已取消")
+            result = self._execute(runner)
+        except DownloadCancelled:
+            self.cancelled.emit()
+            return
+        except ManualDownloadRequired as exc:
+            self.log.emit(f"[下载] {exc}")
+            for detail in exc.details:
+                self.log.emit(f"[下载] {detail}")
+            self.manual_required.emit(exc)
+            self.failed.emit(str(exc))
+            return
+        except DownloadError as exc:
+            # 下载超时、HTTP 错误或本地文件缺失等，也应引导用户手动兜底。
+            self.log.emit(f"[下载] {exc}")
+            error = ManualDownloadRequired(
+                str(exc),
+                package=self._package,
+                release_page=(
+                    SUNSHINE_PAGE
+                    if self._package == "sunshine"
+                    else VDD_PAGE
+                ),
+            )
+            self.manual_required.emit(error)
+            self.failed.emit(str(exc))
+            return
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(result)
+
+    def _execute(self, runner: CommandRunner) -> OperationResult:
+        if self._local_path is not None:
+            return self._install_local(runner)
+
+        self.update.emit(
+            PackageUpdate("resolve", 2, 0, 0, 0.0, "正在获取 GitHub 最新版本…")
+        )
+        plan = resolve_package(
+            self._package,
+            transport=self._transport,
+            proxy_prefix=self._proxy,
+        )
+        size_text = _format_size(plan.asset.size)
+        self.log.emit(
+            f"[解析] {plan.display_name} {plan.release.tag} · "
+            f"{plan.asset.name}（{size_text}）"
+        )
+        self.log.emit(f"[解析] 下载地址：{plan.download_url}")
+        self.update.emit(
+            PackageUpdate(
+                "resolve",
+                8,
+                0,
+                plan.asset.size,
+                0.0,
+                f"已找到 {plan.release.tag} · {plan.asset.name}",
+            )
+        )
+        if self._cancel.is_set():
+            raise DownloadCancelled("下载已取消")
+
+        target = (self._download_dir or default_download_dir()) / plan.asset.name
+        if self._dry_run:
+            self.update.emit(
+                PackageUpdate(
+                    "verify",
+                    100,
+                    0,
+                    plan.asset.size,
+                    0.0,
+                    "Dry-Run：跳过下载，仅记录安装命令",
+                )
+            )
+            result = self._install(runner, plan.package, target)
+            self.update.emit(
+                PackageUpdate("done", 100, 0, 0, 0.0, result.message)
+            )
+            return result
+
+        path = download_asset(
+            plan,
+            self._download_dir,
+            transport=self._transport,
+            on_chunk=self._on_chunk,
+            cancel=self._cancel,
+            log=self.log.emit,
+        )
+        total = path.stat().st_size
+        self.update.emit(
+            PackageUpdate(
+                "verify",
+                100,
+                total,
+                total,
+                0.0,
+                "下载完成，文件大小校验通过",
+            )
+        )
+        if self._cancel.is_set():
+            raise DownloadCancelled("下载已取消")
+        if not self._confirm(plan, path):
+            raise DownloadCancelled("已取消安装")
+        self.update.emit(
+            PackageUpdate("install", 100, total, total, 0.0, "正在安装…")
+        )
+        result = self._install(runner, plan.package, path)
+        self.update.emit(PackageUpdate("done", 100, total, total, 0.0, result.message))
+        return result
+
+    def _install(
+        self,
+        runner: CommandRunner,
+        package: Package,
+        path: Path,
+    ) -> OperationResult:
+        if package == "sunshine":
+            return install_sunshine(runner, path, dry_run=self._dry_run)
+        return install_vdd(
+            runner,
+            path,
+            install_dir=self._vdd_dir,
+            dry_run=self._dry_run,
+        )
+
+    def _install_local(self, runner: CommandRunner) -> OperationResult:
+        assert self._local_path is not None
+        path = self._local_path
+        self.log.emit(f"[安装] 使用本地安装包：{path}")
+        self.update.emit(
+            PackageUpdate("install", 10, 0, 0, 0.0, "使用本地安装包")
+        )
+        if not self._dry_run and not path.is_file():
+            raise DownloadError(f"本地安装包不存在：{path}")
+        if not self._confirm_local(path):
+            raise DownloadCancelled("已取消安装")
+        result = install_local_package(
+            runner,
+            self._package,
+            path,
+            install_dir=self._vdd_dir,
+            dry_run=self._dry_run,
+        )
+        self.update.emit(
+            PackageUpdate("done", 100, 0, 0, 0.0, result.message)
+        )
+        return result
+
+    def _confirm(self, plan: PackagePlan, path: Path) -> bool:
+        if self._dry_run or not self._require_confirmation:
+            return True
+        lines = [
+            f"即将安装 {plan.display_name} {plan.release.tag}",
+            f"来源：{plan.download_url}",
+            f"文件：{path}",
+        ]
+        if plan.package == "sunshine":
+            argv = install_command("sunshine", path)
+            if argv is not None:
+                lines.append("命令：" + _command_text(argv))
+        else:
+            lines.append(f"目标目录：{self._vdd_dir}")
+            lines.append("安装入口：解压后自动检测 VDD.Control.exe / 安装脚本")
+        lines.append("安装过程可能请求管理员权限。")
+        lines.append("是否继续？")
+        return self._wait_for_approval("\n".join(lines))
+
+    def _confirm_local(self, path: Path) -> bool:
+        if self._dry_run or not self._require_confirmation:
+            return True
+        lines = [
+            "即将使用本地安装包",
+            f"文件：{path}",
+            "安装过程可能请求管理员权限。",
+            "是否继续？",
+        ]
+        return self._wait_for_approval("\n".join(lines))
+
+    def _wait_for_approval(self, message: str) -> bool:
+        self._approval.clear()
+        self._approved = False
+        self.confirm_required.emit(message)
+        while not self._approval.wait(0.2):
+            if self._cancel.is_set():
+                return False
+        return self._approved and not self._cancel.is_set()
+
+    def _on_chunk(self, received: int, total: int) -> None:
+        now = time.monotonic()
+        if self._last_time is None:
+            self._last_time = now
+            self._last_bytes = received
+            self._last_emit = now
+        else:
+            elapsed = now - self._last_time
+            if elapsed >= 0.2:
+                instant = max(0.0, (received - self._last_bytes) / elapsed)
+                self._speed = (
+                    instant
+                    if self._speed <= 0
+                    else self._speed * 0.7 + instant * 0.3
+                )
+                self._last_time = now
+                self._last_bytes = received
+        percent = int(received * 100 / total) if total > 0 else 0
+        percent = max(0, min(99, percent))
+        if now - self._last_emit >= 0.1 or received == total:
+            self._last_emit = now
+            self.update.emit(
+                PackageUpdate(
+                    "download",
+                    percent,
+                    received,
+                    total,
+                    self._speed,
+                    f"正在下载… {percent}%",
+                )
+            )
+
+
+def _format_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+
+def _command_text(argv: tuple[str, ...]) -> str:
+    import subprocess
+
+    return subprocess.list2cmdline(list(argv))
 
 
 class SetupWorker(QObject):

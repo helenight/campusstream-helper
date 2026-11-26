@@ -218,6 +218,7 @@ class DevicesStep(QWidget):
     def _populate_devices(self) -> None:
         for platform, title in PLATFORM_TABS:
             list_widget = QListWidget()
+            list_widget.setObjectName("DeviceList")
             list_widget.setSpacing(2)
             list_widget.itemChanged.connect(self._on_selection_changed)
             self._lists[platform] = list_widget
@@ -263,9 +264,11 @@ class DevicesStep(QWidget):
 
     def set_environment(self, data: EnvironmentData) -> None:
         issues: list[str] = []
-        if not data.sunshine.installed:
+        sunshine = data.sunshine
+        vdd = data.vdd
+        if sunshine is None or not sunshine.installed:
             issues.append("未检测到 Sunshine，Step 3 将无法写入服务端配置。")
-        if not data.vdd.installed or data.vdd.settings_path is None:
+        if vdd is None or not vdd.installed or vdd.settings_path is None:
             issues.append("未检测到 Virtual Display Driver 或 vdd_settings.xml。")
         if issues:
             self.ready_banner.set_text(

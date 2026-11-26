@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -74,11 +76,23 @@ class UiSmokeTest(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
-        from ui.styles import apply_stylesheet
+        from PySide6.QtCore import QSettings
+
+        from ui.theme import ThemeManager
         from ui.wizard import WizardWindow
 
-        apply_stylesheet(self.app)
-        self.window = WizardWindow(force_dry_run=True, auto_detect=False)
+        self._settings_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._settings_dir.cleanup)
+        settings = QSettings(
+            str(Path(self._settings_dir.name) / "settings.ini"),
+            QSettings.Format.IniFormat,
+        )
+        self.theme = ThemeManager(self.app, mode="light", settings=settings)
+        self.window = WizardWindow(
+            force_dry_run=True,
+            auto_detect=False,
+            theme=self.theme,
+        )
 
     def tearDown(self) -> None:
         self.window.close()
@@ -88,6 +102,26 @@ class UiSmokeTest(unittest.TestCase):
         self.assertEqual(self.window.step_count, 4)
         self.assertEqual(self.window.current_step, 0)
         self.assertEqual(self.window.stack.count(), 4)
+        self.assertIsNotNone(self.window.theme_switcher)
+
+    def test_theme_switch_updates_stylesheet(self) -> None:
+        from ui.theme import DARK_QSS, LIGHT_QSS
+
+        self.assertEqual(self.app.styleSheet(), LIGHT_QSS)
+        self.window.theme_switcher._actions["dark"].trigger()
+        self.assertEqual(self.theme.mode, "dark")
+        self.assertEqual(self.app.styleSheet(), DARK_QSS)
+        self.assertIn("深色", self.window.theme_switcher.text())
+
+    def test_detection_disables_navigation(self) -> None:
+        self.window._detecting = True
+        self.window._update_nav()
+        self.assertFalse(self.window.next_button.isEnabled())
+        self.assertIn("检测中", self.window.next_button.text())
+
+        self.window._detecting = False
+        self.window._update_nav()
+        self.assertTrue(self.window.next_button.isEnabled())
 
     def test_device_selection_builds_plan(self) -> None:
         devices = self.window.devices_step
@@ -116,6 +150,18 @@ class UiSmokeTest(unittest.TestCase):
         self.assertFalse(self.window.pending_plan.dry_run)
         self.assertFalse(self.window.execute_step._plan.dry_run)
         self.assertEqual(self.window.execute_step.start_button.text(), "开始配置")
+
+    def test_download_action_opens_package_dialog(self) -> None:
+        with patch("ui.wizard.is_admin", return_value=True), patch(
+            "ui.wizard.PackageInstallDialog"
+        ) as dialog_class:
+            self.window.environment_step.download_requested.emit("sunshine")
+
+        dialog_class.assert_called_once()
+        args, kwargs = dialog_class.call_args
+        self.assertEqual(args[1], "sunshine")
+        self.assertTrue(kwargs["auto_start"])
+        self.assertIs(self.window._package_dialog, None)
 
     def test_navigation_to_guide(self) -> None:
         self.window.env_data = _environment()

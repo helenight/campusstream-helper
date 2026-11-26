@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.theme import active_tokens
+
 
 def repolish(widget: QWidget) -> None:
     widget.style().unpolish(widget)
@@ -62,8 +64,43 @@ class StatusPill(QLabel):
         self.set_tone(tone)
 
 
+class StatusBadge(QLabel):
+    """检测项四态徽章，颜色由 QSS 的 ``state`` 属性决定。"""
+
+    def __init__(
+        self,
+        text: str = "",
+        state: str = "pending",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("StatusBadge")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._state = ""
+        self.set_state(state, text)
+
+    def set_state(self, state: str, text: str | None = None) -> None:
+        self._state = state
+        self.setProperty("state", state)
+        if text is not None:
+            self.setText(text)
+        repolish(self)
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+
 class InfoRow(QWidget):
     """左侧标签 + 右侧值的两列信息行。"""
+
+    _TONE_KEYS = {
+        "success": "success_fg",
+        "warning": "warning_fg",
+        "danger": "danger_fg",
+        "info": "info_fg",
+        "muted": "text",
+    }
 
     def __init__(self, label: str, value: str = "—", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,6 +119,7 @@ class InfoRow(QWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._tone = "muted"
         layout.addWidget(self._label)
         layout.addWidget(self._value, 1)
 
@@ -89,14 +127,13 @@ class InfoRow(QWidget):
         self._value.setText(value or "—")
 
     def set_tone(self, tone: str) -> None:
-        colors = {
-            "success": "#15803D",
-            "warning": "#B45309",
-            "danger": "#B91C1C",
-            "info": "#1D4ED8",
-            "muted": "#0F172A",
-        }
-        self._value.setStyleSheet(f"color: {colors.get(tone, '#0F172A')};")
+        self._tone = tone
+        tokens = active_tokens()
+        color = getattr(tokens, self._TONE_KEYS.get(tone, "text"))
+        self._value.setStyleSheet(f"color: {color};")
+
+    def refresh_theme(self) -> None:
+        self.set_tone(self._tone)
 
 
 class Banner(QFrame):

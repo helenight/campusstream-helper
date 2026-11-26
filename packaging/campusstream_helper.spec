@@ -19,6 +19,7 @@ a = Analysis(
     datas=[
         (str(ASSETS / "device_presets.json"), "assets"),
         (str(ASSETS / "icon.ico"), "assets"),
+        (str(ASSETS / "check.svg"), "assets"),
     ],
     hiddenimports=[],
     hookspath=[],
