@@ -2,7 +2,7 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-Phase%201%20%C2%B7%20scaffolding-yellow)
+![status](https://img.shields.io/badge/status-Phase%203%20%C2%B7%20wizard-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -55,12 +55,13 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 |---|---|---|
 | Phase 1 | 项目骨架、设备预设、接口定义、Git 初始化 | ✅ 已完成 |
 | Phase 2 | `core/` 全部底层模块 + Dry-Run 测试 | ✅ 已完成（39 个测试） |
-| Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ⏳ 计划中 |
+| Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ✅ 已完成（43 个测试） |
 | Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ⏳ 计划中 |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
+Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引；现有 39 个核心测试 + 4 个离屏 UI 冒烟测试，共 43 个。
 
-> 当前 `main.py` 只打印版本号；图形界面将在 Phase 3 接入。
+> 当前可直接运行 `main.py` 使用图形向导；首个可执行文件将在 Phase 4 随 `v0.1.0` 发布。
 
 ## 快速开始
 
@@ -71,7 +72,7 @@ Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Su
 3. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
 4. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
 
-> 当前仓库处于 Phase 2，核心模块已完成；尚未发布可执行文件，请先按下方开发者方式运行源码与测试。
+> 当前仓库已完成 Phase 3，但尚未发布可执行文件；请先按下方开发者方式运行源码。
 
 ### 开发者（当前可用）
 
@@ -85,18 +86,24 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 
-# 3. 运行入口（Phase 1 只打印版本号）
+# 3. 启动图形向导（管理员运行时可直接真实配置）
 .\.venv\Scripts\python.exe main.py
 
-# 4. 运行预设数据测试
+# 4. 或只检测、不写入：Dry-Run 模式
+.\.venv\Scripts\python.exe main.py --dry-run
+
+# 5. 运行全部测试（39 个核心 + 4 个离屏 UI 冒烟）
+$env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons），可显著减小 Phase 4 的打包体积；XML 处理使用标准库。
+>
 > 本机 Python 3.15 已可安装 PySide6 6.12。若 Phase 4 打包时 PyInstaller 尚未适配 3.15，请用 Python 3.12 重建 `.venv` 再打包。
 
 ## 四步向导会做什么
 
-1. **环境自检**：管理员权限、显卡、Sunshine 状态、VDD 状态、有线 / 无线网络与 IPv6 诊断。
+1. **环境自检**：管理员权限、电源方案、Sunshine 状态、VDD 状态、有线 / 无线网络与 IPv6 诊断。
 2. **客户端与设备定制**：选择 iPadOS / Android 平板 / Android 手机 / iPhone，勾选机型分辨率或填写自定义分辨率；勾选防火墙放行与防休眠。
 3. **一键配置执行**：后台线程执行，实时滚动日志、进度条、失败项提示与一键回滚。
 4. **配对与避坑指引**：展示推荐连接 IP（有线优先）与 Sunshine 配对页入口，并按平台给出 Moonlight 设置清单。
@@ -114,9 +121,19 @@ streamhelper/
 │  ├─ network.py               # 模块 A：网络、IPv6、防火墙
 │  ├─ vdd.py                   # 模块 B：VDD 检测、预设、XML 注入
 │  ├─ sunshine.py              # 模块 C：Sunshine 检测与配置
-│  └─ power.py                 # 模块 D：电源保活
+│  ├─ power.py                 # 模块 D：电源保活
+│  └─ plan.py                  # SetupPlan / StepOutcome / SetupSummary
 ├─ ui/
-│  └─ __init__.py              # Phase 3：wizard.py / workers.py / steps/
+│  ├─ __init__.py
+│  ├─ wizard.py                # 四步主窗口、导航与提权
+│  ├─ workers.py               # QThread 检测 / 执行 / 回滚 / 单项修复
+│  ├─ styles.py                # 深色侧栏 + 卡片式 QSS
+│  ├─ widgets.py               # Card / StatusPill / InfoRow / Banner
+│  └─ steps/
+│     ├─ step_environment.py   # Step 1：环境自检
+│     ├─ step_devices.py       # Step 2：平台与分辨率
+│     ├─ step_execute.py       # Step 3：执行日志与回滚
+│     └─ step_guide.py         # Step 4：配对与分平台指引
 ├─ tests/
 │  ├─ __init__.py
 │  ├─ fakes.py                 # 测试用假 Runner
@@ -125,8 +142,9 @@ streamhelper/
 │  ├─ test_network.py          # 网络解析 / IPv6 / 防火墙
 │  ├─ test_power.py            # 电源读取 / 应用 / 还原
 │  ├─ test_sunshine.py         # 配置合并 / device_id
-│  └─ test_vdd.py              # XML 注入 / 回滚
-├─ main.py                     # 程序入口（Phase 3 接入 GUI）
+│  ├─ test_vdd.py              # XML 注入 / 回滚
+│  └─ test_ui_smoke.py         # 离屏 UI 冒烟（不弹窗、不写系统）
+├─ main.py                     # 程序入口（GUI + UAC 提示 + --dry-run）
 ├─ requirements.txt
 ├─ requirements-dev.txt
 ├─ .gitignore

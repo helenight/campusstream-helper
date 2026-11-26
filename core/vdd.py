@@ -69,6 +69,7 @@ class DevicePreset:
             refresh_hz=hz,
             label=self.label,
             source="preset",
+            windows_scaling_percent=self.windows_scaling_percent,
         )
 
 
@@ -81,12 +82,15 @@ class MonitorSpec:
     refresh_hz: int
     label: str = ""
     source: MonitorSource = "preset"
+    windows_scaling_percent: int = 150
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
             raise ValueError("宽度与高度必须为正数")
         if self.refresh_hz <= 0:
             raise ValueError("刷新率必须为正数")
+        if not 100 <= self.windows_scaling_percent <= 300:
+            raise ValueError("Windows 缩放比例应在 100~300 之间")
 
     @property
     def key(self) -> tuple[int, int, int]:
