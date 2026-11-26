@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 
-from PySide6.QtCore import QEvent, Qt, QThread, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,7 @@ from core.plan import SetupPlan, SetupSummary
 from core.privileges import is_admin, relaunch_as_admin
 from core.sunshine import restart_service
 from core.vdd import restore_native_display
+from ui.dialogs import PackageInstallDialog
 from ui.steps.step_devices import DevicesStep
 from ui.steps.step_environment import EnvironmentStep
 from ui.steps.step_execute import ExecuteStep
@@ -40,12 +41,6 @@ STEP_META: tuple[tuple[str, str], ...] = (
     ("一键配置", "后台执行与回滚"),
     ("配对指引", "连接地址与分平台提示"),
 )
-
-SUNSHINE_RELEASES = "https://github.com/LizardByte/Sunshine/releases/latest"
-VDD_RELEASES = (
-    "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/latest"
-)
-
 
 class SidebarStep(QWidget):
     """左侧步骤指示器。"""
@@ -107,6 +102,11 @@ class WizardWindow(QMainWindow):
         self._detect_worker: DetectionWorker | None = None
         self._task_thread: QThread | None = None
         self._task_worker: FunctionWorker | None = None
+        self._package_dialog: PackageInstallDialog | None = None
+        self._package_install_done = False
+        self._package_refresh_timer = QTimer(self)
+        self._package_refresh_timer.setSingleShot(True)
+        self._package_refresh_timer.timeout.connect(self.refresh_environment)
 
         self.setWindowTitle("CampusStream Helper · 跨端远控一键配置助手")
         self.resize(1180, 780)
@@ -223,7 +223,7 @@ class WizardWindow(QMainWindow):
         self.environment_step.refresh_requested.connect(self.refresh_environment)
         self.environment_step.fix_ipv6_requested.connect(self._fix_ipv6)
         self.environment_step.relaunch_requested.connect(self._relaunch)
-        self.environment_step.download_requested.connect(self._open_download_page)
+        self.environment_step.download_requested.connect(self._open_package_dialog)
         self.environment_step.restart_sunshine_requested.connect(
             self._restart_sunshine
         )
@@ -584,13 +584,69 @@ class WizardWindow(QMainWindow):
             QMessageBox.warning(self, "IPv6 修复失败", result.message)
         self.refresh_environment()
 
-    def _open_download_page(self, package: str) -> None:
-        """临时兜底：自动下载安装将在后续模块接入。"""
-        url = SUNSHINE_RELEASES if package == "sunshine" else VDD_RELEASES
-        QDesktopServices.openUrl(QUrl(url))
-        self.statusBar().showMessage(
-            "已打开官方下载页；一键自动安装将在后续提交接入。", 5000
+    def _open_package_dialog(self, package: str) -> None:
+        """打开自动下载安装对话框；完成后自动重新检测。"""
+        if package not in {"sunshine", "vdd"}:
+            return
+        if self._package_dialog is not None and self._package_dialog.isVisible():
+            self._package_dialog.raise_()
+            self._package_dialog.activateWindow()
+            return
+
+        dialog_dry_run = self.dry_run
+        if not dialog_dry_run and not is_admin():
+            box = QMessageBox(self)
+            box.setWindowTitle("管理员权限")
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText("自动安装通常需要管理员权限。")
+            box.setInformativeText(
+                "你可以先以 Dry-Run 预览下载地址与安装命令，"
+                "或仍然尝试安装（可能触发 UAC / 被系统拒绝）。"
+            )
+            preview = box.addButton(
+                "以 Dry-Run 预览", QMessageBox.ButtonRole.AcceptRole
+            )
+            attempt = box.addButton(
+                "仍然尝试安装", QMessageBox.ButtonRole.ActionRole
+            )
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(preview)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is preview:
+                dialog_dry_run = True
+            elif clicked is not attempt:
+                return
+
+        vdd_dir = None
+        if self.env_data is not None and self.env_data.vdd is not None:
+            vdd_dir = self.env_data.vdd.install_dir
+        dialog = PackageInstallDialog(
+            self,
+            package,
+            dry_run=dialog_dry_run,
+            vdd_install_dir=vdd_dir,
+            auto_start=True,
+            theme=self.theme,
         )
+        self._package_dialog = dialog
+        self._package_install_done = False
+
+        def on_installed(name: str) -> None:
+            self._package_install_done = True
+            self.statusBar().showMessage(
+                f"{'Sunshine' if name == 'sunshine' else 'VDD'} 安装完成，"
+                "正在重新检测环境…",
+                6000,
+            )
+            self._package_refresh_timer.start(1500)
+
+        dialog.installed.connect(on_installed)
+        dialog.exec()
+        self._package_dialog = None
+        if self._package_install_done and self._package_refresh_timer.isActive():
+            self._package_refresh_timer.stop()
+            self.refresh_environment()
 
     def _restart_sunshine(self) -> None:
         sunshine = self.env_data.sunshine if self.env_data else None

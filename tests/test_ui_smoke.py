@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -149,6 +150,18 @@ class UiSmokeTest(unittest.TestCase):
         self.assertFalse(self.window.pending_plan.dry_run)
         self.assertFalse(self.window.execute_step._plan.dry_run)
         self.assertEqual(self.window.execute_step.start_button.text(), "开始配置")
+
+    def test_download_action_opens_package_dialog(self) -> None:
+        with patch("ui.wizard.is_admin", return_value=True), patch(
+            "ui.wizard.PackageInstallDialog"
+        ) as dialog_class:
+            self.window.environment_step.download_requested.emit("sunshine")
+
+        dialog_class.assert_called_once()
+        args, kwargs = dialog_class.call_args
+        self.assertEqual(args[1], "sunshine")
+        self.assertTrue(kwargs["auto_start"])
+        self.assertIs(self.window._package_dialog, None)
 
     def test_navigation_to_guide(self) -> None:
         self.window.env_data = _environment()

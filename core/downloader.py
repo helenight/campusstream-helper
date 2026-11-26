@@ -442,10 +442,10 @@ def install_sunshine(
     dry_run: bool = False,
 ) -> OperationResult:
     path = Path(msi_path)
-    if not path.is_file():
-        return OperationResult.failure(f"安装包不存在：{path}")
     if path.suffix.lower() != ".msi":
         return OperationResult.failure("Sunshine 安装包必须是 .msi")
+    if not dry_run and not path.is_file():
+        return OperationResult.failure(f"安装包不存在：{path}")
     argv = install_command("sunshine", path)
     assert argv is not None
     if dry_run:
@@ -596,10 +596,23 @@ def install_vdd(
     staging_root: Path | None = None,
 ) -> OperationResult:
     path = Path(zip_path)
-    if not path.is_file():
-        return OperationResult.failure(f"压缩包不存在：{path}")
     if path.suffix.lower() != ".zip":
         return OperationResult.failure("VDD 安装包必须是 .zip")
+    if not path.is_file():
+        if dry_run:
+            details = (
+                f"将下载并解压到：{install_dir}",
+                "安装入口：解压后自动检测 VDD.Control.exe / install.bat / *.inf",
+            )
+            runner.log("[安装] Dry-Run：将下载 VDD 压缩包并部署")
+            for line in details:
+                runner.log(f"[安装] {line}")
+            return OperationResult.success(
+                "Dry-Run：将部署 Virtual Display Driver",
+                details=details,
+                simulated=True,
+            )
+        return OperationResult.failure(f"压缩包不存在：{path}")
     try:
         entry_hint = _planned_entry(path)
         names = _zip_names(path)
