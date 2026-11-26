@@ -27,6 +27,7 @@ from typing import Any, Callable, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from core import __version__
 from core.common import CommandRunner, OperationResult, default_state_dir
 
 Package = Literal["sunshine", "vdd"]
@@ -47,7 +48,7 @@ LogCallback = Callable[[str], None]
 
 _HTTP_HEADERS = {
     "Accept": "application/vnd.github+json",
-    "User-Agent": "CampusStreamHelper/0.2.0",
+    "User-Agent": f"CampusStreamHelper/{__version__}",
 }
 
 
