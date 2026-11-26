@@ -1,0 +1,163 @@
+{
+  "schema": "campusstream-helper/device-presets@1",
+  "schema_version": 1,
+  "updated_at": "2026-11-26",
+  "description": "Moonlight 客户端设备分辨率预设。社区新增机型时，只需在 devices 数组追加一项并发起 PR。",
+  "platforms": [
+    {
+      "id": "ipados",
+      "label": "iPadOS（iPad）",
+      "client_name": "Moonlight for iPadOS",
+      "install_hint": "在 App Store 搜索 Moonlight（Moonlight Game Streaming Project 发布）"
+    },
+    {
+      "id": "android_tablet",
+      "label": "Android 平板",
+      "client_name": "Moonlight for Android",
+      "install_hint": "从 moonlight-stream.org 下载 APK，或使用应用商店版本"
+    },
+    {
+      "id": "android_phone",
+      "label": "Android 手机",
+      "client_name": "Moonlight for Android",
+      "install_hint": "从 moonlight-stream.org 下载 APK；120 FPS 需在 Moonlight 设置中手动开启"
+    },
+    {
+      "id": "ios",
+      "label": "iPhone（iOS）",
+      "client_name": "Moonlight for iOS",
+      "install_hint": "在 App Store 搜索 Moonlight"
+    }
+  ],
+  "devices": [
+    {
+      "id": "ipad-air-11",
+      "platform": "ipados",
+      "label": "iPad Air 11 英寸（M2 / M3）",
+      "width": 2360,
+      "height": 1640,
+      "refresh_options": [60],
+      "default_refresh_hz": 60,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "≈1.44:1",
+      "notes": "Moonlight 分辨率选 Custom 并输入 2360×1640；使用前关闭「台前调度」。"
+    },
+    {
+      "id": "ipad-air-13",
+      "platform": "ipados",
+      "label": "iPad Air 13 英寸（M2 / M3）",
+      "width": 2732,
+      "height": 2048,
+      "refresh_options": [60],
+      "default_refresh_hz": 60,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "4:3",
+      "notes": "13 英寸大屏建议 150% 缩放；关闭「台前调度」避免画面被压缩。"
+    },
+    {
+      "id": "ipad-pro-11",
+      "platform": "ipados",
+      "label": "iPad Pro 11 英寸（M4）",
+      "width": 2420,
+      "height": 1668,
+      "refresh_options": [120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "≈1.45:1",
+      "notes": "支持 ProMotion 120Hz；Moonlight 帧率上限需手动设为 120 FPS。"
+    },
+    {
+      "id": "ipad-mini",
+      "platform": "ipados",
+      "label": "iPad mini（第 6 / 7 代）",
+      "width": 2266,
+      "height": 1488,
+      "refresh_options": [60],
+      "default_refresh_hz": 60,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "≈3:2",
+      "notes": "小屏设备若文字过小，可在 Windows 显示设置中提高缩放至 175%。"
+    },
+    {
+      "id": "xiaomi-pad",
+      "platform": "android_tablet",
+      "label": "小米平板 6 Pro / 7 Pro",
+      "width": 2880,
+      "height": 1800,
+      "refresh_options": [120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "16:10",
+      "notes": "在 Moonlight 设置中把帧率上限调到 120 FPS，并开启「不限制帧率」。"
+    },
+    {
+      "id": "samsung-galaxy-tab",
+      "platform": "android_tablet",
+      "label": "三星 Galaxy Tab S 系列",
+      "width": 2560,
+      "height": 1600,
+      "refresh_options": [120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "16:10",
+      "notes": "DeX 模式与 Moonlight 叠加可能导致分辨率变化，串流时建议退出 DeX。"
+    },
+    {
+      "id": "huawei-matepad",
+      "platform": "android_tablet",
+      "label": "华为 MatePad Pro 系列",
+      "width": 2800,
+      "height": 1840,
+      "refresh_options": [120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "≈3:2",
+      "notes": "鸿蒙系统请允许 Moonlight 后台运行，避免锁屏后断流。"
+    },
+    {
+      "id": "lenovo-pad",
+      "platform": "android_tablet",
+      "label": "联想小新 Pad Pro / Y700",
+      "width": 2560,
+      "height": 1600,
+      "refresh_options": [120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 150,
+      "aspect_ratio": "16:10",
+      "notes": "Y700 系列可在自定义模式中选择 144Hz；请确认 Moonlight 内已解除帧率限制。"
+    },
+    {
+      "id": "android-phone-20-9",
+      "platform": "android_phone",
+      "label": "Android 手机（通用 20:9）",
+      "width": 2400,
+      "height": 1080,
+      "refresh_options": [60, 120],
+      "default_refresh_hz": 120,
+      "windows_scaling_percent": 175,
+      "aspect_ratio": "20:9",
+      "notes": "手机屏幕小，Windows 缩放建议 175%～200%；外接鼠标需在 Moonlight 中授予捕获权限。"
+    },
+    {
+      "id": "iphone-2532",
+      "platform": "ios",
+      "label": "iPhone 12 / 13 / 14 系列（6.1 英寸）",
+      "width": 2532,
+      "height": 1170,
+      "refresh_options": [60],
+      "default_refresh_hz": 60,
+      "windows_scaling_percent": 175,
+      "aspect_ratio": "≈19.5:9",
+      "notes": "iPhone 端 Moonlight 不支持 120Hz；建议把 Windows 缩放调到 175% 以上。"
+    }
+  ],
+  "custom_device": {
+    "label": "自定义设备",
+    "width_range": [640, 7680],
+    "height_range": [480, 4320],
+    "refresh_options": [60, 90, 120, 144],
+    "default_refresh_hz": 60,
+    "windows_scaling_percent": 150,
+    "notes": "填写 Moonlight 客户端实际可请求的分辨率；不确定时优先使用 1920×1080。"
+  }
+}

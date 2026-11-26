@@ -1,0 +1,8 @@
+# 开发与发布依赖
+-r requirements.txt
+
+pytest>=8.3
+pytest-qt>=4.4
+ruff>=0.9
+mypy>=1.14
+pyinstaller>=6.12
