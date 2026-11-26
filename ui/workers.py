@@ -595,7 +595,10 @@ class SetupWorker(QObject):
                 vdd=vdd,
                 device_id=device_id,
                 recommended_ip=recommended_ip,
-                pairing_url=pairing_url(recommended_ip) if recommended_ip else None,
+                # 配对页必须从本机 localhost 打开；局域网 IP 只用于 Moonlight 连接。
+                pairing_url=(
+                    pairing_url(sunshine) if sunshine is not None else pairing_url()
+                ),
                 rollback_available=(
                     not self._plan.dry_run
                     and any(
@@ -743,10 +746,19 @@ class SetupWorker(QObject):
             )
 
             emit_progress(74, "写入 sunshine.conf")
+            manual_resolution: tuple[int, int] | None = None
+            if self._plan.resolution_mode == "manual" and self._plan.monitors:
+                first = self._plan.monitors[0]
+                manual_resolution = (first.width, first.height)
+                runner.log(
+                    "[Sunshine] 单设备固定分辨率："
+                    f"dd_manual_resolution = {first.width}x{first.height}"
+                )
             config_plan = build_config_plan(
                 address_family=self._plan.address_family,
                 output_name=device_id,
                 resolution_mode=self._plan.resolution_mode,
+                manual_resolution=manual_resolution,
                 revert_on_disconnect=True,
             )
             result = apply_config(runner, sunshine, config_plan)

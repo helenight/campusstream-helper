@@ -191,14 +191,93 @@ class UiSmokeTest(unittest.TestCase):
             vdd=_environment().vdd,
             device_id="{test}",
             recommended_ip="192.168.1.10",
-            pairing_url="https://192.168.1.10:47990",
+            pairing_url="https://localhost:47990/pin",
             rollback_available=False,
         )
         self.window.summary = summary
         self.window._go_to(3)
         self.assertEqual(self.window.current_step, 3)
         self.assertEqual(self.window.guide_step.ip_label.text(), "192.168.1.10")
-        self.assertIn("iPadOS 指引", self.window.guide_step.tips.toPlainText())
+        self.assertEqual(
+            self.window.guide_step.pairing_label.text(),
+            "https://localhost:47990/pin",
+        )
+        platform_text = self.window.guide_step.platform_tips.toPlainText()
+        self.assertIn("Settings", platform_text)
+        self.assertIn("Smoothest Video", platform_text)
+        self.assertIn("Optimize Game Settings", platform_text)
+        self.assertIn("台前调度", platform_text)
+        self.assertTrue(self.window.guide_step.artemis_button.isHidden())
+        general_text = self.window.guide_step.general_tips.toPlainText()
+        self.assertIn("优化游戏设置", general_text)
+        self.assertIn("150%", general_text)
+
+    def test_local_pairing_page_is_available_without_lan_ip(self) -> None:
+        summary = SetupSummary(
+            plan=_plan(),
+            outcomes=(),
+            network=_environment().network,
+            sunshine=_environment().sunshine,
+            vdd=_environment().vdd,
+            device_id=None,
+            recommended_ip=None,
+            pairing_url="https://localhost:47990/pin",
+            rollback_available=False,
+        )
+        self.window.guide_step.set_summary(summary)
+        self.assertEqual(
+            self.window.guide_step.pairing_label.text(),
+            "https://localhost:47990/pin",
+        )
+        self.assertTrue(self.window.guide_step.pair_button.isEnabled())
+        self.assertFalse(self.window.guide_step.copy_button.isEnabled())
+
+    def test_android_guide_uses_chinese_menu_names(self) -> None:
+        plan = SetupPlan(
+            platforms=("android_tablet",),
+            monitors=(
+                MonitorSpec(1920, 1200, 60, "Android 平板", "preset", 150),
+            ),
+            resolution_mode="manual",
+            dry_run=True,
+        )
+        summary = SetupSummary(
+            plan=plan,
+            outcomes=(),
+            network=_environment().network,
+            sunshine=_environment().sunshine,
+            vdd=_environment().vdd,
+            device_id="{test}",
+            recommended_ip="192.168.1.10",
+            pairing_url="https://localhost:47990/pin",
+            rollback_available=False,
+        )
+        self.window.guide_step.set_summary(summary)
+        platform_text = self.window.guide_step.platform_tips.toPlainText()
+        for text in (
+            "视频分辨率",
+            "本地（你的屏幕分辨率，例如 1920×1200）",
+            "原生",
+            "60 FPS",
+            "首选 HEVC",
+            "优先使用 HEVC",
+            "视频帧速调节",
+            "优先视频流畅度",
+            "优化游戏设置",
+            "将触控屏作为触控板使用",
+            "移动端客户端推荐（双选项）",
+            "Artemis",
+            "https://github.com/ClassicOldSong/moonlight-android/releases",
+            "自定义非 16:9 分辨率",
+            "双指缩放",
+            "悬浮控制球",
+        ):
+            self.assertIn(text, platform_text)
+        self.assertFalse(self.window.guide_step.artemis_button.isHidden())
+        error_text = self.window.guide_step.error_tips.toPlainText()
+        self.assertIn("error -5", error_text)
+        self.assertIn("将画面拉伸至全屏", error_text)
+        self.assertIn("拉伸视频以铺满全屏", error_text)
 
 
 if __name__ == "__main__":

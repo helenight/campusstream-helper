@@ -176,16 +176,26 @@ class DevicesStep(QWidget):
         options_grid.addWidget(QLabel("分辨率策略"), 1, 0)
         mode_row = QHBoxLayout()
         self.mode_group = QButtonGroup(self)
-        self.radio_do_not_change = QRadioButton("不改变分辨率（单设备最稳）")
-        self.radio_follow_client = QRadioButton("跟随客户端自动切换（多设备推荐）")
-        self.mode_group.addButton(self.radio_do_not_change)
-        self.mode_group.addButton(self.radio_follow_client)
-        self.radio_do_not_change.setChecked(True)
+        self.radio_manual = QRadioButton("固定为所选分辨率（单设备推荐）")
+        self.radio_auto = QRadioButton("跟随客户端自动切换（多设备推荐）")
+        self.mode_group.addButton(self.radio_manual)
+        self.mode_group.addButton(self.radio_auto)
+        self.radio_manual.setChecked(True)
         self.mode_group.buttonClicked.connect(self._on_mode_clicked)
-        mode_row.addWidget(self.radio_do_not_change)
-        mode_row.addWidget(self.radio_follow_client)
+        mode_row.addWidget(self.radio_manual)
+        mode_row.addWidget(self.radio_auto)
         mode_row.addStretch()
         options_grid.addLayout(mode_row, 1, 1)
+        options_grid.addWidget(
+            muted_label(
+                "单设备会写入 dd_resolution_option=manual 和所选分辨率；"
+                "多设备建议 auto，由 Moonlight 客户端请求决定。"
+            ),
+            2,
+            0,
+            1,
+            2,
+        )
 
         self.firewall_check = QCheckBox("添加 Windows 防火墙入站放行规则")
         self.firewall_check.setChecked(True)
@@ -194,9 +204,9 @@ class DevicesStep(QWidget):
         self.reload_check = QCheckBox("配置后重载虚拟显示器驱动")
         self.reload_check.setChecked(True)
         self.reload_check.setToolTip("重载时屏幕可能短暂闪烁，这是正常现象。")
-        options_grid.addWidget(self.firewall_check, 2, 0, 1, 2)
-        options_grid.addWidget(self.power_check, 3, 0, 1, 2)
-        options_grid.addWidget(self.reload_check, 4, 0, 1, 2)
+        options_grid.addWidget(self.firewall_check, 3, 0, 1, 2)
+        options_grid.addWidget(self.power_check, 4, 0, 1, 2)
+        options_grid.addWidget(self.reload_check, 5, 0, 1, 2)
         options_card.add_layout(options_grid)
         layout.addWidget(options_card)
 
@@ -316,9 +326,7 @@ class DevicesStep(QWidget):
             monitors=monitors,
             address_family=self.address_combo.currentData(),
             resolution_mode=(
-                "follow_client"
-                if self.radio_follow_client.isChecked()
-                else "do_not_change"
+                "auto" if self.radio_auto.isChecked() else "manual"
             ),
             enable_firewall=self.firewall_check.isChecked(),
             apply_power_profile=self.power_check.isChecked(),
@@ -345,9 +353,9 @@ class DevicesStep(QWidget):
         if not self._mode_touched:
             count = len(self.selected_monitors())
             if count > 1:
-                self.radio_follow_client.setChecked(True)
+                self.radio_auto.setChecked(True)
             else:
-                self.radio_do_not_change.setChecked(True)
+                self.radio_manual.setChecked(True)
         self._update_summary()
         self.selection_changed.emit()
 
