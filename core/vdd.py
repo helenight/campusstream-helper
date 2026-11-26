@@ -10,13 +10,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-from core.common import CommandRunner, OperationResult, default_state_dir
+from core.common import (
+    CommandRunner,
+    OperationResult,
+    default_state_dir,
+    resource_path,
+)
 
 Platform = Literal["ipados", "android_tablet", "android_phone", "ios"]
 VddSchema = Literal["resolutions", "monitor-list", "unknown"]
 MonitorSource = Literal["preset", "custom"]
 
-DEFAULT_PRESETS_PATH = Path(__file__).resolve().parents[1] / "assets" / "device_presets.json"
+DEFAULT_PRESETS_PATH = resource_path("assets/device_presets.json")
 
 # Phase 2 会结合注册表与环境变量扩展这份候选列表。
 DEFAULT_VDD_SETTINGS_CANDIDATES: tuple[Path, ...] = (

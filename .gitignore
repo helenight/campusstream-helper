@@ -30,8 +30,9 @@ build/
 dist/
 *.spec
 *.manifest
-# UAC 清单属于源码，必须提交（放在 packaging/ 下）
+# 打包配置属于源码，必须提交（放在 packaging/ 下）
 !packaging/*.manifest
+!packaging/*.spec
 
 # ---------- 运行日志与自动备份（可能含设备 ID / IP，禁止上传） ----------
 *.log

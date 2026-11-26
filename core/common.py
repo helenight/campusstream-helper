@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,17 @@ def default_state_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / "AppData" / "Local"
     return root / _STATE_DIR_NAME
+
+
+def resource_path(relative: str) -> Path:
+    """定位随程序分发的只读资源。
+
+    PyInstaller 单文件模式会把资源解压到 ``sys._MEIPASS``；源码运行时
+    则相对于仓库根目录。两种模式都返回存在的绝对路径。
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base else Path(__file__).resolve().parents[1]
+    return root / relative
 
 
 @dataclass(frozen=True, slots=True)

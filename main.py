@@ -2,15 +2,46 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core import __version__
+from core.common import default_state_dir, resource_path
 from core.privileges import is_admin, relaunch_as_admin
 from ui.styles import apply_stylesheet
 from ui.wizard import WizardWindow
+
+
+def _install_crash_handler() -> None:
+    """把未捕获异常写入本地日志，避免无控制台的窗口程序静默退出。"""
+
+    def handler(exc_type, exc, tb) -> None:
+        log_path: Path | None = None
+        try:
+            state_dir = default_state_dir()
+            state_dir.mkdir(parents=True, exist_ok=True)
+            log_path = state_dir / "crash.log"
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} ===\n")
+                handle.write("".join(traceback.format_exception(exc_type, exc, tb)))
+        except OSError:
+            log_path = None
+        QMessageBox.critical(
+            None,
+            "CampusStream Helper 发生错误",
+            "程序遇到未处理的错误，已停止当前操作。\n"
+            f"日志位置：{log_path or '无法写入日志目录'}\n\n{exc}",
+        )
+        if sys.stderr is not None:  # 窗口版 exe 没有控制台
+            sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = handler
 
 
 def _prompt_elevation(args: list[str]) -> tuple[bool, bool]:
@@ -48,22 +79,38 @@ def _prompt_elevation(args: list[str]) -> tuple[bool, bool]:
 def main(argv: list[str] | None = None) -> int:
     """启动图形界面，返回进程退出码。"""
     args = list(sys.argv[1:] if argv is None else argv)
+    smoke_test = "--smoke-test" in args
+    if smoke_test:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
     app = QApplication([sys.argv[0]])
     app.setApplicationName("CampusStream Helper")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("CampusStream Helper Contributors")
     app.setFont(QFont("Microsoft YaHei UI", 10))
+    app.setWindowIcon(QIcon(str(resource_path("assets/icon.ico"))))
     apply_stylesheet(app)
+    _install_crash_handler()
 
-    force_dry_run = "--dry-run" in args
-    if not is_admin() and not force_dry_run:
+    force_dry_run = "--dry-run" in args or smoke_test
+    if not smoke_test and not is_admin() and not force_dry_run:
         proceed, dry_run = _prompt_elevation(args)
         if not proceed:
             return 0
         force_dry_run = dry_run
 
-    window = WizardWindow(force_dry_run=force_dry_run)
+    window = WizardWindow(force_dry_run=force_dry_run, auto_detect=not smoke_test)
     window.show()
+    if smoke_test:
+        app.processEvents()
+        preset_count = len(window.devices_step._items)
+        if sys.stdout is not None:  # 窗口版 exe 没有控制台，stdout 可能为 None
+            print(
+                f"smoke ok: version={__version__}, presets={preset_count}, "
+                f"steps={window.step_count}"
+            )
+        window.close()
+        return 0 if preset_count else 1
     return app.exec()
 
 

@@ -2,7 +2,7 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-Phase%203%20%C2%B7%20wizard-blue)
+![status](https://img.shields.io/badge/status-v0.1.0%20%C2%B7%20release-green)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -56,23 +56,29 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | Phase 1 | 项目骨架、设备预设、接口定义、Git 初始化 | ✅ 已完成 |
 | Phase 2 | `core/` 全部底层模块 + Dry-Run 测试 | ✅ 已完成（39 个测试） |
 | Phase 3 | PySide6 四步向导 + `QThread` 后台任务 | ✅ 已完成（43 个测试） |
-| Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ⏳ 计划中 |
+| Phase 4 | PyInstaller 打包、UAC manifest、`v0.1.0` Release | ✅ 已完成（48 个测试） |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
-Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引；现有 39 个核心测试 + 4 个离屏 UI 冒烟测试，共 43 个。
+Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引。
+Phase 4 完成单文件打包：内嵌 `asInvoker` UAC 清单与 VERSIONINFO，构建后自动做离屏冒烟测试；现有 39 个核心测试 + 4 个 UI 冒烟 + 5 个打包校验，共 48 个。
 
-> 当前可直接运行 `main.py` 使用图形向导；首个可执行文件将在 Phase 4 随 `v0.1.0` 发布。
+> `v0.1.0` 的 Windows 单文件程序已在本机成功构建并通过启动验证；发布文件为 `CampusStreamHelper-v0.1.0.exe`。
 
 ## 快速开始
 
-### 普通用户（v0.1.0 发布后）
+### 普通用户（下载 exe）
 
-1. 打开 GitHub 的 **Releases** 页面，下载最新 `CampusStreamHelper-v0.1.0.exe`。
-2. 右键 → **以管理员身份运行**。
-3. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
-4. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
+1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.1.0.exe`。
+2. 可选校验：在下载目录运行
+   `Get-FileHash .\CampusStreamHelper-v0.1.0.exe -Algorithm SHA256`，
+   与 Release 说明中的 SHA256 对比。
+3. 双击启动；程序会自己检测权限并提示提权。也可以右键 → **以管理员身份运行**。
+4. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
+5. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
 
-> 当前仓库已完成 Phase 3，但尚未发布可执行文件；请先按下方开发者方式运行源码。
+> 单文件程序无需安装 Python，也不会写入注册表卸载项；运行状态、日志与回滚清单保存在 `%LOCALAPPDATA%\CampusStreamHelper`。
+>
+> 未签名的 exe 首次运行可能被 SmartScreen 拦截：点「更多信息」→「仍要运行」。若仍不放心，可按下方开发者方式从源码运行。
 
 ### 开发者（当前可用）
 
@@ -92,14 +98,44 @@ python -m venv .venv
 # 4. 或只检测、不写入：Dry-Run 模式
 .\.venv\Scripts\python.exe main.py --dry-run
 
-# 5. 运行全部测试（39 个核心 + 4 个离屏 UI 冒烟）
+# 5. 运行全部测试（39 个核心 + 4 个 UI 冒烟 + 5 个打包校验）
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Remove-Item Env:\QT_QPA_PLATFORM
+
+# 6. 打包单文件 exe（自动跑测试 → 打包 → 冒烟测试 → 输出 SHA256）
+.\packaging\build.ps1
 ```
 
-> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons），可显著减小 Phase 4 的打包体积；XML 处理使用标准库。
+> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.1.0.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设。
 >
-> 本机 Python 3.15 已可安装 PySide6 6.12。若 Phase 4 打包时 PyInstaller 尚未适配 3.15，请用 Python 3.12 重建 `.venv` 再打包。
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML 处理使用标准库。本机已用 Python 3.15 + PyInstaller 6.22.3 验证：单文件约 46.8 MB，冒烟测试退出码 0。
+
+## 发布流程（维护者）
+
+```powershell
+# 1. 版本号：同步修改 core/__init__.py 与 packaging/version_info.txt，并跑测试
+
+# 2. 打包（自动测试 + 冒烟测试，输出体积与 SHA256）
+.\packaging\build.ps1
+
+# 3. 本地验收
+.\dist\CampusStreamHelper-v0.1.0.exe --dry-run
+
+# 4. 提交源码（dist/ 与 build/ 已被 .gitignore 排除）
+git add .gitignore README.md core main.py assets packaging tests
+git commit -m "build: 发布 v0.1.0 单文件程序"
+git push
+
+# 5. 打附注标签并推送
+git tag -a v0.1.0 -m "CampusStream Helper v0.1.0"
+git push origin v0.1.0
+```
+
+随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.1.0` → 上传
+`dist\CampusStreamHelper-v0.1.0.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
+
+> 不要使用 `git push --force`。若标签写错，用 `git tag -d v0.1.0` 删除本地标签后重新打，再推送。
 
 ## 四步向导会做什么
 
@@ -113,7 +149,9 @@ $env:QT_QPA_PLATFORM = "offscreen"
 ```text
 streamhelper/
 ├─ assets/
-│  └─ device_presets.json      # 全平台机型预设（社区可 PR 扩充）
+│  ├─ device_presets.json      # 全平台机型预设（社区可 PR 扩充）
+│  ├─ icon.ico                 # exe / 窗口图标（多尺寸）
+│  └─ icon.png                 # README / 商店展示用
 ├─ core/
 │  ├─ __init__.py              # 版本号
 │  ├─ common.py                # CommandRunner / Dry-Run / .bak 备份
@@ -134,6 +172,12 @@ streamhelper/
 │     ├─ step_devices.py       # Step 2：平台与分辨率
 │     ├─ step_execute.py       # Step 3：执行日志与回滚
 │     └─ step_guide.py         # Step 4：配对与分平台指引
+├─ packaging/
+│  ├─ campusstream_helper.spec # PyInstaller 单文件配置
+│  ├─ app.manifest             # UAC asInvoker + Win10/11 兼容性
+│  ├─ version_info.txt         # exe 版本资源（与 core.__version__ 同步）
+│  ├─ make_icon.py             # 重新生成 assets/icon.ico
+│  └─ build.ps1                # 测试 → 打包 → 冒烟测试 → SHA256
 ├─ tests/
 │  ├─ __init__.py
 │  ├─ fakes.py                 # 测试用假 Runner
@@ -143,8 +187,9 @@ streamhelper/
 │  ├─ test_power.py            # 电源读取 / 应用 / 还原
 │  ├─ test_sunshine.py         # 配置合并 / device_id
 │  ├─ test_vdd.py              # XML 注入 / 回滚
-│  └─ test_ui_smoke.py         # 离屏 UI 冒烟（不弹窗、不写系统）
-├─ main.py                     # 程序入口（GUI + UAC 提示 + --dry-run）
+│  ├─ test_ui_smoke.py         # 离屏 UI 冒烟（不弹窗、不写系统）
+│  └─ test_packaging.py        # 清单 / 版本 / 图标 / spec 资源校验
+├─ main.py                     # 程序入口（GUI + 崩溃日志 + --dry-run / --smoke-test）
 ├─ requirements.txt
 ├─ requirements-dev.txt
 ├─ .gitignore
@@ -224,9 +269,11 @@ Virtual Display Driver 不包含在 Windows 中，需要单独安装。常见默
 
 虚拟屏可能仍作为扩展屏存在。使用向导的 **「切回仅电脑屏幕」**，或按 `Win + P` 选择「仅电脑屏幕」。串流开始时 Sunshine 会按配置重新激活虚拟屏。
 
-### 7. 会不会被杀毒软件报毒？
+### 7. 首次运行被 SmartScreen 或杀毒软件拦截？
 
-PyInstaller 单文件程序未做代码签名时，可能被启发式引擎误报。你可以直接运行源码，或按仓库脚本自行构建。项目不包含任何联网上传、挖矿或静默驻留行为。
+程序未做代码签名，Windows SmartScreen 会提示「已保护你的电脑」：点 **更多信息 → 仍要运行**。
+PyInstaller 单文件程序也可能被启发式引擎误报；你可以直接运行源码，或按仓库脚本自行构建。项目不包含任何联网上传、挖矿或静默驻留行为。
+若程序异常退出，查看 `%LOCALAPPDATA%\CampusStreamHelper\crash.log`。
 
 ### 8. 支持同时连接平板和手机吗？
 
@@ -235,6 +282,14 @@ PyInstaller 单文件程序未做代码签名时，可能被启发式引擎误�
 ### 9. 支持 macOS / Linux / 电视盒子吗？
 
 当前只支持 **Windows PC 作为被控端**。客户端可以是 iPadOS、Android、iOS；macOS 等平台的 Sunshine 配置不在本项目范围内。
+
+### 10. 备份、回滚状态和日志保存在哪里？
+
+- 被修改的配置文件旁：`sunshine.conf.bak.<时间戳>`、`vdd_settings.xml.bak.<时间戳>`；
+- 电源与 VDD 回滚清单：`%LOCALAPPDATA%\CampusStreamHelper\`；
+- 崩溃日志：`%LOCALAPPDATA%\CampusStreamHelper\crash.log`。
+
+这些文件可能包含本机 IP、设备 ID，已被 `.gitignore` 排除，请勿上传到公开仓库。
 
 ## 上游项目与致谢
 
