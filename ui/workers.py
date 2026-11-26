@@ -66,6 +66,8 @@ from core.sunshine import (
     find_virtual_display_id,
     pairing_url,
     restart_service,
+    snapshot_log_sizes,
+    wait_for_virtual_display_id,
 )
 from core.vdd import (
     VddStatus,
@@ -673,25 +675,50 @@ class SetupWorker(QObject):
                     finish()
                     return
 
-            # 必须先让 Sunshine 重新启动并枚举显示器，日志才可能出现最新设备列表。
+            # 记录重启前偏移，重启后轮询新增日志，避免双显卡机器启动慢时死等。
+            log_offsets = snapshot_log_sizes(sunshine)
             emit_progress(46, "重启 Sunshine 以枚举显示器")
+            restart_result = restart_service(runner, sunshine)
             record(
                 "service_initial",
                 "重启 Sunshine（枚举显示器）",
-                restart_service(runner, sunshine),
+                restart_result,
             )
             if cancelled():
                 finish()
                 return
 
-            emit_progress(54, "等待 Sunshine 写入显示器日志")
-            if not self._pause(2.5, "Sunshine 启动后"):
-                cancelled()
-                finish()
-                return
+            if self._plan.dry_run:
+                runner.log(
+                    "[Sunshine] Dry-Run 不会重启服务，直接读取现有日志，跳过轮询"
+                )
+                device_id = find_virtual_display_id(runner, sunshine)
+            elif not restart_result.ok:
+                runner.log(
+                    "[Sunshine] 首次重启失败，跳过日志轮询，改为读取现有日志"
+                )
+                device_id = find_virtual_display_id(runner, sunshine)
+            else:
+                emit_progress(54, "轮询等待 Sunshine 日志刷新")
+                device_id = wait_for_virtual_display_id(
+                    runner,
+                    sunshine,
+                    offsets=log_offsets,
+                    timeout_s=10.0,
+                    interval_s=0.5,
+                    cancel=self._cancel,
+                )
+                if cancelled():
+                    finish()
+                    return
+                if device_id is None:
+                    emit_progress(62, "从完整日志中继续查找虚拟屏 device_id")
+                    device_id = find_virtual_display_id(runner, sunshine)
+                else:
+                    runner.log(
+                        f"[Sunshine] 日志轮询提取到虚拟屏 device_id：{device_id}"
+                    )
 
-            emit_progress(62, "提取虚拟屏 device_id")
-            device_id = find_virtual_display_id(runner, sunshine)
             if device_id is not None:
                 message = f"已从日志提取：{device_id}"
                 runner.log(f"[Sunshine] 提取到虚拟屏 device_id：{device_id}")

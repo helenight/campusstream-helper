@@ -21,6 +21,8 @@ from core.sunshine import (
     find_virtual_display_id,
     pairing_url,
     read_config,
+    snapshot_log_sizes,
+    wait_for_virtual_display_id,
 )
 from tests.fakes import FakeRunner
 
@@ -327,6 +329,131 @@ class SunshineDetectionTest(unittest.TestCase):
                 log_path=log,
             )
             self.assertEqual(found, VDD_ID)
+
+    def test_scan_does_not_require_currently_available_devices_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                "some unrelated startup line\n"
+                + json.dumps(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        ),
+                        device(VDD_ID_2, "", "VDD by MTT", primary=False),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            found = find_virtual_display_id(
+                CommandRunner(),
+                log_status(root),
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID_2)
+
+    def test_wait_for_log_polls_only_new_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                json.dumps(
+                    [device(VDD_ID, "", "VDD by MTT", primary=False)]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            status = log_status(root)
+            offsets = snapshot_log_sizes(status, log_path=log)
+            sleeps: list[float] = []
+
+            def sleep(seconds: float) -> None:
+                sleeps.append(seconds)
+                with log.open("a", encoding="utf-8") as handle:
+                    if len(sleeps) == 1:
+                        handle.write(
+                            json.dumps(
+                                [
+                                    device(
+                                        PHYSICAL_ID,
+                                        r"\\.\DISPLAY1",
+                                        "Laptop",
+                                        primary=True,
+                                    )
+                                ]
+                            )
+                            + "\n"
+                        )
+                    else:
+                        handle.write(
+                            json.dumps(
+                                [
+                                    device(
+                                        VDD_ID_2,
+                                        "",
+                                        "VDD by MTT",
+                                        primary=False,
+                                    )
+                                ]
+                            )
+                            + "\n"
+                        )
+
+            logs: list[str] = []
+            found = wait_for_virtual_display_id(
+                CommandRunner(log_sink=logs.append),
+                status,
+                offsets=offsets,
+                timeout_s=2.0,
+                interval_s=0.5,
+                sleep=sleep,
+                log_path=log,
+            )
+            self.assertEqual(found, VDD_ID_2)
+            self.assertEqual(len(sleeps), 2)
+            self.assertTrue(any("轮询" in line for line in logs))
+
+    def test_timeout_reports_pnp_and_last_log_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "sunshine.log"
+            log.write_text(
+                json.dumps(
+                    [
+                        device(
+                            PHYSICAL_ID,
+                            r"\\.\DISPLAY1",
+                            "Laptop",
+                            primary=True,
+                        )
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner(
+                powershell_response="Status  FriendlyName  InstanceId\nOK      Laptop      DISPLAY\\LAPTOP"
+            )
+            self.assertIsNone(
+                wait_for_virtual_display_id(
+                    runner,
+                    log_status(root),
+                    offsets=snapshot_log_sizes(log_status(root), log_path=log),
+                    timeout_s=0.01,
+                    interval_s=0.01,
+                    sleep=lambda _seconds: None,
+                    log_path=log,
+                )
+            )
+            self.assertTrue(
+                any("Get-PnpDevice -Class Display" in log for log in runner.logs)
+            )
+            self.assertTrue(any("最后 1 行" in log for log in runner.logs))
 
     def test_single_physical_display_is_not_selected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from core.common import CommandRunner, OperationResult
 
@@ -50,13 +52,15 @@ _BARE_GUID_RE = re.compile(
     r"(?<!\{)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?!\})"
 )
-_VIRTUAL_DISPLAY_KEYWORDS = ("vdd", "mtt", "virtual", "idd", "indirect")
-_DISPLAY_BLOCK_MARKERS = (
-    "currently available devices:",
-    "currently available devices",
-    "available devices:",
-    "available devices",
-)
+_VIRTUAL_DISPLAY_KEYWORDS = ("vdd", "mtt", "virtual", "indirect", "idd")
+_DEVICE_ID_KEY_RE = re.compile(r'"device_id"\s*:', re.IGNORECASE)
+_DISPLAY_PNP_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+Get-PnpDevice -Class Display |
+    Select-Object Status, FriendlyName, InstanceId |
+    Format-Table -AutoSize |
+    Out-String -Width 300
+""".strip()
 _CONFIG_LINE_RE = re.compile(
     r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*=\s*(?P<value>.*)$"
 )
@@ -241,9 +245,12 @@ def find_virtual_display_id(
             runner.log(f"[Sunshine] 读取日志失败 {candidate}: {exc}")
             continue
 
-        blocks = _display_blocks(text)
-        if not blocks:
-            runner.log(f"[Sunshine] 日志中未找到「Currently available devices」JSON 块：{candidate}")
+        devices = _scan_display_devices(text)
+        if not devices:
+            runner.log(
+                f"[Sunshine] 日志中没有解析到包含 "
+                f"device_id/display_name/friendly_name 的对象：{candidate}"
+            )
             legacy = _best_guid_from_text(text)
             if legacy is not None:
                 runner.log(
@@ -253,29 +260,27 @@ def find_virtual_display_id(
                 return legacy
             continue
 
-        for index, devices in enumerate(blocks):
-            if index == 0:
-                runner.log(f"[Sunshine] 最近显示器列表（{candidate.name}）：")
-                _log_devices(runner, devices)
-            matched, reason = _match_virtual_device(devices)
-            if matched is not None:
-                device_id = _device_id(matched)
-                if device_id:
-                    if index > 0:
-                        runner.log(f"[Sunshine] 匹配显示器块（从末尾第 {index + 1} 个）：")
-                        _log_devices(runner, devices)
-                    runner.log(
-                        f"[Sunshine] 从日志选择虚拟屏 ID：{device_id}（{reason}）"
-                    )
-                    return device_id
-            if fallback_id is None:
-                candidate_device = _fallback_display_device(devices)
-                candidate_id = (
-                    _device_id(candidate_device) if candidate_device else None
+        runner.log(
+            f"[Sunshine] 从日志解析到 {len(devices)} 个显示器对象"
+            f"（{candidate.name}，按最近出现优先）："
+        )
+        _log_devices(runner, devices)
+        matched, reason = _match_virtual_device(devices)
+        if matched is not None:
+            device_id = _device_id(matched)
+            if device_id:
+                runner.log(
+                    f"[Sunshine] 从日志选择虚拟屏 ID：{device_id}（{reason}）"
                 )
-                if candidate_id:
-                    fallback_id = candidate_id
-                    fallback_source = f"{candidate.name}（从末尾第 {index + 1} 个显示器块）"
+                return device_id
+        if fallback_id is None:
+            candidate_device = _fallback_display_device(devices)
+            candidate_id = (
+                _device_id(candidate_device) if candidate_device else None
+            )
+            if candidate_id:
+                fallback_id = candidate_id
+                fallback_source = candidate.name
 
     if fallback_id is not None:
         runner.log(
@@ -331,6 +336,145 @@ def configured_output_name(
     if device_id is None:
         runner.log(f"[Sunshine] 现有 output_name 不是有效 GUID，忽略：{value}")
     return device_id
+
+
+def snapshot_log_sizes(
+    status: SunshineStatus,
+    *,
+    log_path: Path | None = None,
+) -> dict[Path, int]:
+    """重启服务前记录日志大小，作为轮询新增内容的起始偏移。"""
+    sizes: dict[Path, int] = {}
+    for candidate in _log_candidates(status, log_path):
+        try:
+            sizes[candidate] = candidate.stat().st_size
+        except OSError:
+            sizes[candidate] = 0
+    return sizes
+
+
+def wait_for_virtual_display_id(
+    runner: CommandRunner,
+    status: SunshineStatus,
+    *,
+    offsets: Mapping[Path, int],
+    timeout_s: float = 10.0,
+    interval_s: float = 0.5,
+    sleep: Callable[[float], None] = time.sleep,
+    cancel: threading.Event | None = None,
+    log_path: Path | None = None,
+) -> str | None:
+    """轮询重启后新增的日志，命中虚拟屏后立即返回。
+
+    Args:
+        offsets: ``snapshot_log_sizes`` 在重启前记录的文件大小。
+        timeout_s: 最长等待秒数。
+        interval_s: 轮询间隔秒数。
+        sleep: 可注入的等待函数，便于测试。
+        cancel: 用户取消事件。
+    """
+    candidates = _log_candidates(status, log_path)
+    interval = max(0.05, interval_s)
+    attempts = max(1, int(timeout_s / interval) + 1)
+    runner.log(
+        f"[Sunshine] 轮询等待日志刷新（最长 {timeout_s:.0f} 秒，"
+        f"每 {interval:.1f} 秒检查）…"
+    )
+    for candidate in candidates:
+        runner.log(
+            f"[Sunshine] 轮询日志：{candidate}（起始偏移 {offsets.get(candidate, 0)}）"
+        )
+
+    saw_device_key = False
+    for attempt in range(1, attempts + 1):
+        if cancel is not None and cancel.is_set():
+            runner.log("[Sunshine] 等待日志刷新已取消")
+            return None
+        for candidate in candidates:
+            try:
+                size = candidate.stat().st_size
+            except OSError:
+                continue
+            start = offsets.get(candidate, 0)
+            if size < start:
+                # 日志被轮转或截断，从头读取当前文件。
+                start = 0
+            if size <= start:
+                continue
+            try:
+                new_text = _read_range(candidate, start, size).decode(
+                    "utf-8", errors="replace"
+                )
+            except OSError as exc:
+                runner.log(f"[Sunshine] 读取新增日志失败 {candidate}: {exc}")
+                continue
+            if '"device_id"' not in new_text:
+                continue
+            saw_device_key = True
+            devices = _scan_display_devices(new_text)
+            matched, reason = _match_virtual_device(devices)
+            if matched is not None:
+                device_id = _device_id(matched)
+                if device_id:
+                    runner.log(
+                        f"[Sunshine] 新增日志第 {attempt} 次轮询命中虚拟屏："
+                        f"{device_id}（{reason}）"
+                    )
+                    return device_id
+        if attempt < attempts:
+            sleep(interval)
+
+    if saw_device_key:
+        runner.log(
+            f"[Sunshine] {timeout_s:.0f} 秒内新增日志出现了 device_id，"
+            "但没有解析到虚拟屏"
+        )
+    else:
+        runner.log(f"[Sunshine] {timeout_s:.0f} 秒内日志没有新增 device_id")
+    report_display_diagnostics(runner, status, log_path=log_path)
+    return None
+
+
+def report_display_diagnostics(
+    runner: CommandRunner,
+    status: SunshineStatus,
+    *,
+    log_path: Path | None = None,
+    tail_lines: int = 30,
+) -> None:
+    """轮询超时后输出 PnP 显示器状态与日志末尾，避免继续盲猜。"""
+    runner.log("[Sunshine] 轮询超时，开始诊断显示器与 Sunshine 日志…")
+    result = runner.query_powershell(_DISPLAY_PNP_SCRIPT, timeout_s=20)
+    if result.ok and result.stdout.strip():
+        runner.log(
+            "[Sunshine] Get-PnpDevice -Class Display：\n"
+            + result.stdout.strip()
+        )
+    else:
+        runner.log(
+            "[Sunshine] Get-PnpDevice -Class Display 查询失败："
+            + _tail(result.stderr or result.stdout)
+        )
+
+    existing = [
+        candidate
+        for candidate in _log_candidates(status, log_path)
+        if candidate.is_file()
+    ]
+    if not existing:
+        runner.log("[Sunshine] 诊断时没有找到可读取的 sunshine.log")
+        return
+    for candidate in existing:
+        try:
+            lines = _read_tail(candidate).splitlines()
+        except OSError as exc:
+            runner.log(f"[Sunshine] 读取诊断日志失败 {candidate}: {exc}")
+            continue
+        tail = lines[-tail_lines:]
+        runner.log(
+            f"[Sunshine] {candidate} 最后 {len(tail)} 行：\n"
+            + "\n".join(tail)
+        )
 
 
 def default_resolution_mode(monitor_count: int) -> ResolutionMode:
@@ -601,74 +745,61 @@ def _log_candidates(status: SunshineStatus, explicit: Path | None) -> list[Path]
     return _dedupe_paths(candidates)
 
 
-def _display_blocks(text: str) -> list[list[dict[str, Any]]]:
-    """从日志末尾向前解析显示器 JSON 块，最新块排在最前。"""
-    decoder = json.JSONDecoder()
-    lowered = text.casefold()
-    cursor = len(text)
-    blocks: list[list[dict[str, Any]]] = []
-    seen_starts: set[int] = set()
+def _scan_display_devices(text: str) -> list[dict[str, Any]]:
+    """扫描任意位置的显示器 JSON 对象，不依赖固定标题文本。
 
-    while cursor > 0:
-        positions: list[tuple[int, int]] = []
-        for marker in _DISPLAY_BLOCK_MARKERS:
-            found = lowered.rfind(marker, 0, cursor)
-            if found >= 0:
-                positions.append((found, found + len(marker)))
-        if not positions:
-            break
-        latest = max(position for position, _end in positions)
-        # "available devices" 是 "currently available devices" 的子串，
-        # 同一处命中时合并为一个标记组，避免重复解析同一 JSON 块。
-        group_start = min(
-            position
-            for position, _end in positions
-            if latest - position <= 80
-        )
-        marker_end = max(
-            end
-            for position, end in positions
-            if position >= group_start
-        )
-        cursor = group_start
-        start = _find_json_start(text, marker_end)
-        if start is None or start in seen_starts:
+    从日志末尾向前查找 ``"device_id"``，再用 JSON 解码器从最近的 ``{``
+    开始配对解析完整对象，因此 ``info`` 等嵌套对象不会截断结果。
+    最新出现的设备排在前面，并按归一化后的 device_id 去重。
+    """
+    decoder = json.JSONDecoder()
+    devices: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for match in reversed(list(_DEVICE_ID_KEY_RE.finditer(text))):
+        device = _device_object_at(text, match.start(), decoder)
+        if device is None:
             continue
-        seen_starts.add(start)
+        if "display_name" not in device and "friendly_name" not in device:
+            # 排除 Scheduling display device configuration 这类只有 device_id 的配置块。
+            continue
+        device_id = _device_id(device)
+        if device_id is None or device_id in seen:
+            continue
+        seen.add(device_id)
+        devices.append(device)
+        if len(devices) >= 64:
+            break
+    return devices
+
+
+def _device_object_at(
+    text: str,
+    key_position: int,
+    decoder: json.JSONDecoder,
+) -> dict[str, Any] | None:
+    start = key_position
+    for _ in range(64):
+        start = text.rfind("{", 0, start)
+        if start < 0:
+            return None
         try:
-            value, _end = decoder.raw_decode(text[start:])
+            value, _end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
             continue
-        devices = _as_device_list(value)
-        if devices:
-            blocks.append(devices)
-    return blocks
-
-
-def _find_json_start(text: str, start: int) -> int | None:
-    limit = min(len(text), start + 512)
-    for index in range(start, limit):
-        char = text[index]
-        if char in "[{":
-            return index
-        if not char.isspace():
-            return None
+        if (
+            isinstance(value, dict)
+            and _device_id(value)
+            and ("display_name" in value or "friendly_name" in value)
+        ):
+            return value
     return None
 
 
-def _as_device_list(value: Any) -> list[dict[str, Any]]:
-    if isinstance(value, list):
-        raw = value
-    elif isinstance(value, dict):
-        nested = value.get("devices")
-        raw = nested if isinstance(nested, list) else [value]
-    else:
-        return []
-    devices: list[dict[str, Any]] = []
-    for item in raw:
-        if isinstance(item, dict) and _device_id(item):
-            devices.append(item)
-    return devices
+def _read_range(path: Path, start: int, end: int) -> bytes:
+    with path.open("rb") as handle:
+        handle.seek(start)
+        return handle.read(max(0, end - start))
 
 
 def _device_id(device: Mapping[str, Any] | None) -> str | None:

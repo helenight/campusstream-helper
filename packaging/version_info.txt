@@ -2,8 +2,8 @@
 # 版本号必须与 core/__init__.py 的 __version__ 保持一致，tests/test_packaging.py 会校验。
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(0, 2, 1, 0),
-    prodvers=(0, 2, 1, 0),
+    filevers=(0, 2, 2, 0),
+    prodvers=(0, 2, 2, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,12 +19,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'CampusStream Helper Contributors'),
             StringStruct('FileDescription', 'CampusStream Helper - 跨端远控一键配置助手'),
-            StringStruct('FileVersion', '0.2.1'),
+            StringStruct('FileVersion', '0.2.2'),
             StringStruct('InternalName', 'CampusStreamHelper'),
             StringStruct('LegalCopyright', 'Copyright (c) 2026 CampusStream Helper Contributors'),
             StringStruct('OriginalFilename', 'CampusStreamHelper.exe'),
             StringStruct('ProductName', 'CampusStream Helper'),
-            StringStruct('ProductVersion', '0.2.1')
+            StringStruct('ProductVersion', '0.2.2')
           ]
         )
       ]
