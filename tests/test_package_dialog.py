@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -21,6 +22,7 @@ try:
     from tests.test_package_worker import small_payload
     from ui.dialogs import PackageInstallDialog
     from ui.dialogs.package_dialog import PROXY_SETTINGS_KEY
+    from ui.workers import PackageUpdate
 except ImportError:  # PySide6 未安装时跳过
     QApplication = None  # type: ignore[assignment]
     PackageInstallDialog = None  # type: ignore[assignment]
@@ -172,6 +174,32 @@ class PackageDialogTest(unittest.TestCase):
         self.assertEqual(transport.download_urls, [])
         self.assertEqual(self.runner.commands[0][0], "msiexec")
         self.assertIn("使用本地安装包", dialog.log_view.toPlainText())
+
+    def test_vdd_prompt_is_shown_once(self) -> None:
+        dialog = self._dialog(FakeTransport(), dry_run=True)
+        update = PackageUpdate(
+            "vdd_prompt",
+            100,
+            0,
+            0,
+            0.0,
+            "已自动打开 VDD Control，请按提示安装驱动",
+        )
+        with patch(
+            "ui.dialogs.package_dialog.QMessageBox.information"
+        ) as information:
+            dialog._on_update(update)
+            dialog._on_update(update)
+
+        information.assert_called_once()
+        message = information.call_args.args[2]
+        self.assertIn(
+            "Virtual Display Driver → System → Install Driver",
+            message,
+        )
+        self.assertIn("自动检测", message)
+        self.assertEqual(dialog.status_pill.text(), "等待驱动安装")
+        self.assertIn("VDD Control", dialog.notice._text.text())
 
     def test_proxy_is_persisted(self) -> None:
         transport = BlockingTransport(small_payload())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,10 +11,13 @@ from core.common import CommandRunner
 from core.vdd import (
     DevicePreset,
     MonitorSpec,
+    VddStatus,
     apply_resolutions,
+    detect_vdd,
     load_device_presets,
     reset_managed_resolutions,
 )
+from tests.fakes import FakeRunner
 
 BASE_XML = """<?xml version="1.0" encoding="utf-8"?>
 <vdd_settings>
@@ -259,6 +263,49 @@ class VddXmlTest(unittest.TestCase):
             final = settings.read_text(encoding="utf-8")
             self.assertNotIn("2732", final)
             self.assertIn("1920", final)
+
+
+class VddDetectionTest(unittest.TestCase):
+    def _detect(self, root: Path, devices: list[dict]) -> VddStatus:
+        (root / "vdd_settings.xml").write_text(BASE_XML, encoding="utf-8")
+        payload = {"devices": devices, "controllers": []}
+        runner = FakeRunner(powershell_response=json.dumps(payload))
+        return detect_vdd(runner, extra_search_roots=[root])
+
+    def test_ok_virtual_device_marks_driver_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            status = self._detect(
+                Path(temp),
+                [
+                    {
+                        "FriendlyName": "Virtual Display Driver",
+                        "Status": "OK",
+                    }
+                ],
+            )
+        self.assertTrue(status.installed)
+        self.assertTrue(status.device_ready)
+
+    def test_non_ok_virtual_device_marks_driver_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            status = self._detect(
+                Path(temp),
+                [
+                    {
+                        "FriendlyName": "Virtual Display Driver",
+                        "Status": "Error",
+                    }
+                ],
+            )
+        self.assertTrue(status.installed)
+        self.assertFalse(status.device_ready)
+        self.assertIn("VDD Control", status.detail)
+
+    def test_settings_without_pnp_device_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            status = self._detect(Path(temp), [])
+        self.assertTrue(status.installed)
+        self.assertFalse(status.device_ready)
 
 
 if __name__ == "__main__":

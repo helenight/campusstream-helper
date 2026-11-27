@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
+from core.common import OperationResult
 from core.downloader import (
     DownloadCancelled,
     DownloadError,
@@ -19,6 +22,7 @@ from core.downloader import (
     detect_arch,
     download_asset,
     extract_zip_safe,
+    find_vdd_control,
     install_command,
     install_local_package,
     install_sunshine,
@@ -373,6 +377,27 @@ class InstallSunshineTest(unittest.TestCase):
         self.assertEqual(runner.commands[0][0], "msiexec")
         self.assertIn("/passive", runner.commands[0])
 
+    def test_real_install_starts_service_automatically(self) -> None:
+        msi = self.dir / "Sunshine.msi"
+        msi.write_bytes(b"x")
+        runner = FakeRunner()
+        result = install_sunshine(runner, msi, dry_run=False)
+        self.assertTrue(result.ok)
+        self.assertIn("无需手动双击桌面 Sunshine 图标", result.message)
+        self.assertEqual(len(runner.powershell_mutations), 1)
+        self.assertIn("Start-Service", runner.powershell_mutations[0])
+
+    def test_install_still_succeeds_when_service_start_fails(self) -> None:
+        msi = self.dir / "Sunshine.msi"
+        msi.write_bytes(b"x")
+        runner = FakeRunner()
+        failure = OperationResult.failure("启动服务失败", details=("Access denied",))
+        with patch("core.downloader.start_service", return_value=failure):
+            result = install_sunshine(runner, msi, dry_run=False)
+        self.assertTrue(result.ok)
+        self.assertIn("服务未能自动启动", result.message)
+        self.assertIn("启动 Sunshine 服务", result.message)
+
     def test_invalid_extension(self) -> None:
         path = self.dir / "Sunshine.zip"
         path.write_bytes(b"x")
@@ -442,6 +467,34 @@ class InstallVddTest(unittest.TestCase):
         self.assertTrue((install_dir / "VDD.Control.exe").is_file())
         self.assertTrue((install_dir / "driver.sys").is_file())
         self.assertEqual(launched[0].name, "VDD.Control.exe")
+        self.assertEqual(launched[0].parent, install_dir)
+
+    def test_skips_launcher_when_driver_already_ready(self) -> None:
+        install_dir = self.dir / "ready-install"
+        payload = {
+            "devices": [
+                {"FriendlyName": "Virtual Display Driver", "Status": "OK"}
+            ],
+            "controllers": [],
+        }
+        launched: list[Path] = []
+        result = install_vdd(
+            FakeRunner(powershell_response=json.dumps(payload)),
+            self._zip(),
+            install_dir=install_dir,
+            launcher=lambda path: launched.append(path) or True,
+            staging_root=self.dir / "staging",
+        )
+        self.assertTrue(result.ok)
+        self.assertIn("驱动已就绪", result.message)
+        self.assertEqual(launched, [])
+
+    def test_find_vdd_control_searches_nested_directories(self) -> None:
+        nested = self.dir / "nested" / "VDD.Control.25.7.23"
+        nested.mkdir(parents=True)
+        executable = nested / "VDD.Control.exe"
+        executable.write_bytes(b"exe")
+        self.assertEqual(find_vdd_control(self.dir), executable)
 
     def test_dry_run_does_not_extract(self) -> None:
         install_dir = self.dir / "not-created"

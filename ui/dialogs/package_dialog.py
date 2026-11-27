@@ -109,6 +109,7 @@ class PackageInstallDialog(QDialog):
         self._close_when_done = False
         self._manual_error = False
         self._installed_success = False
+        self._vdd_prompt_shown = False
         self._release_page = SUNSHINE_PAGE if package == "sunshine" else VDD_PAGE
 
         self.setWindowTitle(
@@ -351,6 +352,7 @@ class PackageInstallDialog(QDialog):
         self._close_when_done = False
         self._manual_error = False
         self._installed_success = False
+        self._vdd_prompt_shown = False
         self._release_page = (
             SUNSHINE_PAGE if self._package == "sunshine" else VDD_PAGE
         )
@@ -448,9 +450,39 @@ class PackageInstallDialog(QDialog):
         elif update.stage == "install":
             self.status_pill.set_status("安装中", "info")
             self._update_controls()
+        elif update.stage == "vdd_prompt":
+            self.status_pill.set_status("等待驱动安装", "info")
+            self._set_notice(
+                "VDD 文件已部署，已自动打开 VDD Control。"
+                "请点击 Virtual Display Driver → System → Install Driver。",
+                "info",
+                "请完成 VDD 驱动安装",
+            )
+            self._update_controls()
+            self._show_vdd_install_prompt()
+        elif update.stage == "vdd_wait":
+            self.status_pill.set_status("等待驱动就绪", "info")
+            self.stage_label.setText(update.message)
+            self._update_controls()
         elif update.stage == "done":
             self.progress_bar.setProperty("result", "success")
             repolish(self.progress_bar)
+
+    def _show_vdd_install_prompt(self) -> None:
+        if self._vdd_prompt_shown:
+            return
+        self._vdd_prompt_shown = True
+        self._append_log(
+            "[VDD] 已自动打开 VDD Control；请点击 "
+            "Virtual Display Driver → System → Install Driver"
+        )
+        QMessageBox.information(
+            self,
+            "完成 VDD 驱动安装",
+            "已自动打开 VDD Control.exe。\n\n"
+            "请点击：Virtual Display Driver → System → Install Driver。\n\n"
+            "安装完成后本窗口会自动检测，Step 1 会自动刷新为「已就绪」。",
+        )
 
     def _on_confirm_required(self, message: str) -> None:
         self.status_pill.set_status("等待确认", "info")

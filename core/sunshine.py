@@ -82,6 +82,22 @@ class SunshineStatus:
     service_state: ServiceState
     version: str | None
     detail: str
+    # 国内杀软可能在 MSI 安装阶段误删 tools\sunshinesvc.exe（Error 1310）。
+    sunshinesvc_path: Path | None = None
+    sunshinesvc_exists: bool = True
+    service_image_path: Path | None = None
+    service_image_exists: bool = True
+
+    @property
+    def service_binary_missing(self) -> bool:
+        """服务文件缺失，或服务 ImagePath 指向的文件不存在。"""
+        if self.executable is None:
+            return False
+        if self.sunshinesvc_path is not None and not self.sunshinesvc_exists:
+            return True
+        if self.service_image_path is not None and not self.service_image_exists:
+            return True
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,15 +172,23 @@ def detect_sunshine(
         config_path = install_dir / "config" / CONFIG_FILENAME
 
     service_name = DEFAULT_SERVICE_NAME
+    service_image_path: Path | None = None
     if isinstance(service, dict):
         service_name = str(service.get("Name") or DEFAULT_SERVICE_NAME)
         service_state = _normalize_service_state(service.get("Status"))
+        service_image_path = _parse_service_image_path(service.get("ImagePath"))
     else:
         service_state = "not_installed"
 
     version: str | None = None
     if apps:
         version = str(apps[0].get("DisplayVersion") or "") or None
+
+    sunshinesvc_path = (
+        install_dir / "tools" / "sunshinesvc.exe" if install_dir is not None else None
+    )
+    sunshinesvc_exists = bool(sunshinesvc_path and sunshinesvc_path.is_file())
+    service_image_exists = bool(service_image_path and service_image_path.is_file())
 
     installed = executable is not None or (install_dir is not None and install_dir.is_dir())
     if installed and config_path is not None and not config_path.exists():
@@ -183,6 +207,15 @@ def detect_sunshine(
         )
         if version:
             detail += f"；版本 {version}"
+        detail += (
+            f"；服务程序 {sunshinesvc_path or '未知'}"
+            f"（{'存在' if sunshinesvc_exists else '缺失'}）"
+        )
+        if service_image_path is not None:
+            detail += (
+                f"；ImagePath {service_image_path}"
+                f"（{'存在' if service_image_exists else '缺失'}）"
+            )
     runner.log(f"[Sunshine] {detail}")
 
     return SunshineStatus(
@@ -194,6 +227,10 @@ def detect_sunshine(
         service_state=service_state,
         version=version,
         detail=detail,
+        sunshinesvc_path=sunshinesvc_path,
+        sunshinesvc_exists=sunshinesvc_exists,
+        service_image_path=service_image_path,
+        service_image_exists=service_image_exists,
     )
 
 
@@ -571,6 +608,48 @@ def apply_config(
     )
 
 
+def start_service(
+    runner: CommandRunner,
+    service_name: str = DEFAULT_SERVICE_NAME,
+) -> OperationResult:
+    """启动 Sunshine 服务并等待其进入 Running，供安装后自动拉起。"""
+    safe_name = _ps_quote(service_name or DEFAULT_SERVICE_NAME)
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$deadline = (Get-Date).AddSeconds(20)
+$svc = $null
+while (-not $svc -and (Get-Date) -lt $deadline) {{
+    $svc = Get-Service -Name '{safe_name}' -ErrorAction SilentlyContinue
+    if (-not $svc) {{ Start-Sleep -Milliseconds 500 }}
+}}
+if (-not $svc) {{ throw 'SunshineService 未安装' }}
+if ($svc.Status -ne 'Running') {{ Start-Service -Name '{safe_name}' }}
+while ($svc.Status -ne 'Running' -and (Get-Date) -lt $deadline) {{
+    Start-Sleep -Milliseconds 500
+    $svc.Refresh()
+}}
+if ($svc.Status -ne 'Running') {{
+    throw ('服务状态仍为 ' + $svc.Status.ToString())
+}}
+$svc.Status.ToString()
+""".strip()
+    result = runner.mutate_powershell(script, timeout_s=60)
+    if result.simulated:
+        return OperationResult.success(
+            f"[DRY-RUN] 将启动服务「{service_name}」",
+            simulated=True,
+        )
+    if not result.ok:
+        return OperationResult.failure(
+            f"启动服务「{service_name}」失败",
+            details=(_tail(result.stderr or result.stdout),),
+        )
+    return OperationResult.success(
+        f"服务「{service_name}」已在后台启动",
+        details=(f"当前状态: {_tail(result.stdout)}",),
+    )
+
+
 def restart_service(runner: CommandRunner, status: SunshineStatus) -> OperationResult:
     """重启 Sunshine Windows 服务，使配置生效；Dry-Run 下只记录。"""
     if status.service_state == "not_installed":
@@ -663,9 +742,13 @@ if (-not $svc) {
 }
 $service = $null
 if ($svc) {
+    $cim = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq $svc.Name } |
+        Select-Object -First 1
     $service = [pscustomobject]@{
         Name = $svc.Name
         Status = $svc.Status.ToString()
+        ImagePath = if ($cim) { $cim.PathName } else { $null }
     }
 }
 [pscustomobject]@{ apps = $apps; service = $service } |
@@ -714,6 +797,27 @@ def _dedupe_paths(paths: Sequence[Path | None]) -> list[Path]:
         seen.add(key)
         result.append(path)
     return result
+
+
+def _parse_service_image_path(value: Any) -> Path | None:
+    """从服务 ``ImagePath`` 提取可执行文件路径。
+
+    兼容带引号、不带引号、带启动参数以及 ``%ProgramFiles%`` 环境变量形式。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        raw = text[1:end] if end > 0 else text[1:]
+    else:
+        match = re.match(r"^(.*?\.exe)(?:\s|$)", text, re.IGNORECASE)
+        raw = match.group(1) if match else text.split()[0]
+    raw = raw.strip().strip('"')
+    if raw.startswith("\\??\\"):
+        raw = raw[4:]
+    raw = os.path.expandvars(raw)
+    return Path(raw) if raw else None
 
 
 def _normalize_service_state(value: Any) -> ServiceState:

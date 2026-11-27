@@ -103,6 +103,11 @@ class UiSmokeTest(unittest.TestCase):
         self.assertEqual(self.window.current_step, 0)
         self.assertEqual(self.window.stack.count(), 4)
         self.assertIsNotNone(self.window.theme_switcher)
+        self.assertEqual(
+            self.window.uninstall_button.text(),
+            "一键还原与卸载",
+        )
+        self.assertTrue(self.window.uninstall_button.isEnabled())
 
     def test_theme_switch_updates_stylesheet(self) -> None:
         from ui.theme import DARK_QSS, LIGHT_QSS

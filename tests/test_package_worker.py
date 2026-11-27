@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from core.common import OperationResult
 from core.downloader import DownloadError
 from tests.fakes import FakeRunner
 from tests.test_downloader import FakeTransport
@@ -39,10 +43,19 @@ class PackageWorkerTest(unittest.TestCase):
         self.downloads = self.root / "downloads"
         self.vdd_dir = self.root / "vdd"
 
-    def _worker(self, transport, *, dry_run=False, local_path=None, require_confirmation=False):
+    def _worker(
+        self,
+        transport,
+        *,
+        dry_run=False,
+        local_path=None,
+        require_confirmation=False,
+        package="sunshine",
+        vdd_wait_timeout_s=300.0,
+    ):
         self.runner = FakeRunner(dry_run=dry_run)
         worker = PackageWorker(
-            "sunshine",
+            package,
             dry_run=dry_run,
             local_path=local_path,
             vdd_install_dir=self.vdd_dir,
@@ -50,6 +63,9 @@ class PackageWorkerTest(unittest.TestCase):
             transport=transport,
             require_confirmation=require_confirmation,
             runner_factory=lambda _dry: self.runner,
+            sleep=lambda _seconds: None,
+            vdd_wait_timeout_s=vdd_wait_timeout_s,
+            vdd_poll_interval_s=0.1,
         )
         self.updates = []
         self.logs = []
@@ -153,6 +169,80 @@ class PackageWorkerTest(unittest.TestCase):
         self.assertEqual(len(self.cancelled), 1)
         self.assertEqual(transport.json_urls, [])
         self.assertEqual(self.finished, [])
+
+    def _vdd_local_worker(self, *, timeout: float = 300.0) -> PackageWorker:
+        self.vdd_dir.mkdir(parents=True)
+        (self.vdd_dir / "VDD.Control.exe").write_bytes(b"exe")
+        archive = self.root / "VDD.Control.25.7.23.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("VDD.Control.exe", b"exe")
+        return self._worker(
+            FakeTransport(),
+            package="vdd",
+            local_path=archive,
+            vdd_wait_timeout_s=timeout,
+        )
+
+    def test_vdd_ready_after_install_skips_prompt(self) -> None:
+        worker = self._vdd_local_worker()
+        deployed = OperationResult.success("已部署 VDD 文件")
+        with (
+            patch("ui.workers.install_local_package", return_value=deployed),
+            patch(
+                "ui.workers.detect_vdd",
+                return_value=SimpleNamespace(device_ready=True),
+            ),
+        ):
+            worker.run()
+
+        self.assertEqual(self.failed, [])
+        self.assertTrue(self.finished[0].ok)
+        self.assertIn("已就绪", self.finished[0].message)
+        self.assertNotIn("vdd_prompt", [update.stage for update in self.updates])
+
+    def test_vdd_waits_until_driver_ready(self) -> None:
+        worker = self._vdd_local_worker()
+        deployed = OperationResult.success("已部署 VDD 文件")
+        with (
+            patch("ui.workers.install_local_package", return_value=deployed),
+            patch(
+                "ui.workers.detect_vdd",
+                side_effect=[
+                    SimpleNamespace(device_ready=False),
+                    SimpleNamespace(device_ready=True),
+                ],
+            ),
+        ):
+            worker.run()
+
+        self.assertEqual(self.failed, [])
+        self.assertTrue(self.finished[0].ok)
+        self.assertIn("Step 1 将自动刷新", self.finished[0].message)
+        stages = [update.stage for update in self.updates]
+        self.assertIn("vdd_prompt", stages)
+        self.assertIn("vdd_wait", stages)
+        self.assertTrue(
+            any(
+                "Virtual Display Driver → System → Install Driver" in line
+                for line in self.logs
+            )
+        )
+
+    def test_vdd_wait_timeout_is_non_fatal(self) -> None:
+        worker = self._vdd_local_worker(timeout=0)
+        deployed = OperationResult.success("已部署 VDD 文件")
+        with (
+            patch("ui.workers.install_local_package", return_value=deployed),
+            patch(
+                "ui.workers.detect_vdd",
+                return_value=SimpleNamespace(device_ready=False),
+            ),
+        ):
+            worker.run()
+
+        self.assertEqual(self.failed, [])
+        self.assertTrue(self.finished[0].ok)
+        self.assertIn("暂未检测到驱动就绪", self.finished[0].message)
 
 
 if __name__ == "__main__":

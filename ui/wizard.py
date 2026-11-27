@@ -26,7 +26,7 @@ from core.plan import SetupPlan, SetupSummary
 from core.privileges import is_admin, relaunch_as_admin
 from core.sunshine import restart_service
 from core.vdd import restore_native_display
-from ui.dialogs import PackageInstallDialog
+from ui.dialogs import PackageInstallDialog, UninstallDialog
 from ui.steps.step_devices import DevicesStep
 from ui.steps.step_environment import EnvironmentStep
 from ui.steps.step_execute import ExecuteStep
@@ -188,6 +188,12 @@ class WizardWindow(QMainWindow):
         self.step_counter.setObjectName("Muted")
         header.addWidget(self.step_counter)
         header.addSpacing(10)
+        self.uninstall_button = make_button("一键还原与卸载", "danger")
+        self.uninstall_button.setToolTip(
+            "恢复显示模式、还原电源、移除防火墙，并可卸载 Sunshine 与 VDD。"
+        )
+        header.addWidget(self.uninstall_button)
+        header.addSpacing(6)
         self.theme_switcher = ThemeSwitcher(self.theme)
         header.addWidget(self.theme_switcher)
         content_layout.addLayout(header)
@@ -237,6 +243,7 @@ class WizardWindow(QMainWindow):
         self.execute_step.execution_started.connect(self._on_execution_started)
         self.execute_step.busy_changed.connect(self._on_busy_changed)
         self.guide_step.restore_display_requested.connect(self._restore_display)
+        self.uninstall_button.clicked.connect(self._open_uninstall_dialog)
         self.dry_run_check.toggled.connect(self._on_dry_run_toggled)
         self.back_button.clicked.connect(self._go_back)
         self.next_button.clicked.connect(self._go_next)
@@ -359,6 +366,7 @@ class WizardWindow(QMainWindow):
                 or not sunshine.installed
                 or vdd is None
                 or not vdd.installed
+                or not vdd.device_ready
             ):
                 answer = QMessageBox.question(
                     self,
@@ -497,6 +505,7 @@ class WizardWindow(QMainWindow):
 
     def _on_busy_changed(self, busy: bool) -> None:
         self.dry_run_check.setEnabled(not busy)
+        self.uninstall_button.setEnabled(not busy)
         self._update_nav()
 
     def _on_selection_changed(self) -> None:
@@ -634,12 +643,17 @@ class WizardWindow(QMainWindow):
 
         def on_installed(name: str) -> None:
             self._package_install_done = True
-            self.statusBar().showMessage(
-                f"{'Sunshine' if name == 'sunshine' else 'VDD'} 安装完成，"
-                "正在重新检测环境…",
-                6000,
-            )
-            self._package_refresh_timer.start(1500)
+            if name == "sunshine":
+                message = (
+                    "Sunshine 安装完成，服务已在后台自启；"
+                    "无需手动双击桌面 Sunshine 图标"
+                )
+                delay_ms = 4000
+            else:
+                message = "VDD 安装流程结束，正在重新检测驱动状态…"
+                delay_ms = 1200
+            self.statusBar().showMessage(message, 8000)
+            self._package_refresh_timer.start(delay_ms)
 
         dialog.installed.connect(on_installed)
         dialog.exec()
@@ -647,6 +661,67 @@ class WizardWindow(QMainWindow):
         if self._package_install_done and self._package_refresh_timer.isActive():
             self._package_refresh_timer.stop()
             self.refresh_environment()
+
+    def _open_uninstall_dialog(self) -> None:
+        """打开勾选式清理/卸载窗口；真实执行后重新检测环境。"""
+        if (
+            self._detecting
+            or self.execute_step.is_busy
+            or (
+                self._task_thread is not None
+                and self._task_thread.isRunning()
+            )
+        ):
+            QMessageBox.information(
+                self,
+                "请稍候",
+                "当前有检测或配置任务正在执行，请完成后再打开清理与卸载。",
+            )
+            return
+
+        vdd_dir = None
+        if self.env_data is not None and self.env_data.vdd is not None:
+            vdd_dir = self.env_data.vdd.install_dir
+        dialog = UninstallDialog(
+            self,
+            dry_run=self.dry_run,
+            vdd_install_dir=vdd_dir,
+            theme=self.theme,
+        )
+        dialog.exec()
+        if not dialog.executed:
+            return
+        if dialog.was_dry_run:
+            self.statusBar().showMessage(
+                "Dry-Run 清理预览完成，未修改系统",
+                6000,
+            )
+            return
+
+        report = dialog.report
+        self.pending_plan = None
+        self.summary = None
+        self.execute_step.reset()
+        self.guide_step.clear()
+        self._refresh_sidebar()
+        self._update_nav()
+        if report is None:
+            self.statusBar().showMessage(
+                "清理任务异常结束，请查看清理日志",
+                8000,
+            )
+        elif report.failed_steps:
+            self.statusBar().showMessage(
+                "清理完成但存在失败项，请查看清理日志",
+                8000,
+            )
+        else:
+            self.statusBar().showMessage(
+                "清理与卸载完成，正在重新检测环境…",
+                8000,
+            )
+        self._go_to(0)
+        self.refresh_environment()
 
     def _restart_sunshine(self) -> None:
         sunshine = self.env_data.sunshine if self.env_data else None

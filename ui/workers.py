@@ -24,6 +24,7 @@ from core.downloader import (
     PackagePlan,
     default_download_dir,
     download_asset,
+    find_vdd_control,
     install_command,
     install_local_package,
     install_sunshine,
@@ -68,6 +69,11 @@ from core.sunshine import (
     restart_service,
     snapshot_log_sizes,
     wait_for_virtual_display_id,
+)
+from core.uninstaller import (
+    UninstallOptions,
+    UninstallReport,
+    run_uninstall,
 )
 from core.vdd import (
     VddStatus,
@@ -243,6 +249,9 @@ class PackageWorker(QObject):
         transport: HttpTransport | None = None,
         require_confirmation: bool = True,
         runner_factory: Callable[[bool], CommandRunner] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        vdd_wait_timeout_s: float = 300.0,
+        vdd_poll_interval_s: float = 2.0,
     ) -> None:
         super().__init__()
         self._package = package
@@ -258,6 +267,9 @@ class PackageWorker(QObject):
         self._runner_factory = runner_factory or (
             lambda dry: CommandRunner(dry_run=dry, log_sink=self.log.emit)
         )
+        self._sleep = sleep
+        self._vdd_wait_timeout_s = max(0.0, vdd_wait_timeout_s)
+        self._vdd_poll_interval_s = max(0.1, vdd_poll_interval_s)
         self._cancel = threading.Event()
         self._approval = threading.Event()
         self._approved = False
@@ -398,11 +410,93 @@ class PackageWorker(QObject):
     ) -> OperationResult:
         if package == "sunshine":
             return install_sunshine(runner, path, dry_run=self._dry_run)
-        return install_vdd(
+        result = install_vdd(
             runner,
             path,
             install_dir=self._vdd_dir,
             dry_run=self._dry_run,
+        )
+        return self._after_vdd_install(runner, result)
+
+    def _after_vdd_install(
+        self,
+        runner: CommandRunner,
+        result: OperationResult,
+    ) -> OperationResult:
+        """VDD 文件部署后确认 PnP 状态，未就绪时等待用户在向导中安装。"""
+        if not result.ok or self._dry_run:
+            return result
+        control = find_vdd_control(self._vdd_dir)
+        if control is None:
+            return result
+        try:
+            status = detect_vdd(runner, extra_search_roots=[self._vdd_dir])
+        except Exception as exc:
+            self.log.emit(f"[VDD] PnP 预检查失败，继续等待驱动：{exc}")
+            status = None
+        if status is not None and status.device_ready:
+            return OperationResult.success(
+                "VDD 驱动已就绪，无需再运行安装向导",
+                details=result.details,
+            )
+
+        self.update.emit(
+            PackageUpdate(
+                "vdd_prompt",
+                100,
+                0,
+                0,
+                0.0,
+                "已自动打开 VDD Control，请按提示安装驱动",
+            )
+        )
+        self.log.emit(
+            "[VDD] 已自动拉起 VDD.Control.exe；"
+            "请点击 Virtual Display Driver → System → Install Driver"
+        )
+        return self._wait_for_vdd_ready(runner, result)
+
+    def _wait_for_vdd_ready(
+        self,
+        runner: CommandRunner,
+        result: OperationResult,
+    ) -> OperationResult:
+        self.update.emit(
+            PackageUpdate(
+                "vdd_wait",
+                100,
+                0,
+                0,
+                0.0,
+                "等待 VDD 驱动就绪，完成后会自动刷新 Step 1",
+            )
+        )
+        deadline = time.monotonic() + self._vdd_wait_timeout_s
+        while time.monotonic() < deadline:
+            if self._cancel.is_set():
+                return OperationResult.success(
+                    "已启动 VDD 安装向导；等待已取消，完成安装后请重新检测",
+                    details=result.details,
+                )
+            try:
+                status = detect_vdd(runner, extra_search_roots=[self._vdd_dir])
+            except Exception as exc:
+                self.log.emit(f"[VDD] 等待期间 PnP 检测失败：{exc}")
+            else:
+                if status.device_ready:
+                    self.log.emit(
+                        "[VDD] Get-PnpDevice 已检测到状态 OK 的虚拟屏，"
+                        "驱动安装完成"
+                    )
+                    return OperationResult.success(
+                        "VDD 驱动已就绪，Step 1 将自动刷新",
+                        details=result.details,
+                    )
+            self._sleep(self._vdd_poll_interval_s)
+        return OperationResult.success(
+            "VDD Control 已启动，但暂未检测到驱动就绪；"
+            "完成安装后请点击「重新检测」",
+            details=result.details,
         )
 
     def _install_local(self, runner: CommandRunner) -> OperationResult:
@@ -423,6 +517,8 @@ class PackageWorker(QObject):
             install_dir=self._vdd_dir,
             dry_run=self._dry_run,
         )
+        if self._package == "vdd" and result.ok and not self._dry_run:
+            result = self._after_vdd_install(runner, result)
         self.update.emit(
             PackageUpdate("done", 100, 0, 0, 0.0, result.message)
         )
@@ -629,13 +725,13 @@ class SetupWorker(QObject):
                     )
                 )
                 prerequisites_ok = False
-            if not vdd.installed or vdd.settings_path is None:
+            if not vdd.installed or not vdd.device_ready or vdd.settings_path is None:
                 outcomes.append(
                     StepOutcome(
                         key="vdd_detect",
                         label="虚拟显示器驱动",
                         ok=False,
-                        message="未检测到 VDD 或未找到 vdd_settings.xml",
+                        message="VDD 驱动未就绪，或未找到 vdd_settings.xml",
                         details=(vdd.detail,),
                     )
                 )
@@ -954,3 +1050,44 @@ class FunctionWorker(QObject):
             self.finished.emit(self._func(runner))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class UninstallWorker(QObject):
+    """在 QThread 中执行一键还原与卸载，并实时回传进度与步骤结果。"""
+
+    started = Signal()
+    progress = Signal(int, str)
+    step = Signal(object)            # UninstallStep
+    log = Signal(str)
+    finished = Signal(object)        # UninstallReport
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        options: UninstallOptions,
+        *,
+        dry_run: bool = False,
+        runner_factory: Callable[[bool], CommandRunner] | None = None,
+    ) -> None:
+        super().__init__()
+        self._options = options
+        self._dry_run = dry_run
+        self._runner_factory = runner_factory or (
+            lambda dry: CommandRunner(dry_run=dry, log_sink=self.log.emit)
+        )
+
+    def run(self) -> None:
+        self.progress.emit(0, "准备清理任务…")
+        self.started.emit()
+        try:
+            runner = self._runner_factory(self._dry_run)
+            report: UninstallReport = run_uninstall(
+                runner,
+                self._options,
+                progress=self.progress.emit,
+                on_step=self.step.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(report)
