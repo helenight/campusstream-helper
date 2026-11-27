@@ -81,8 +81,16 @@ NO_RESOLUTIONS_XML = """<?xml version="1.0" encoding="utf-8"?>
 class DevicePresetTest(unittest.TestCase):
     def test_load_all_presets(self) -> None:
         presets = load_device_presets()
-        self.assertEqual(len(presets), 10)
-        self.assertEqual(len({preset.id for preset in presets}), 10)
+        self.assertEqual(len(presets), 11)
+        self.assertEqual(len({preset.id for preset in presets}), 11)
+        compat = next(
+            preset for preset in presets if preset.id == "android_16_10_compat"
+        )
+        self.assertEqual((compat.width, compat.height), (1680, 1050))
+        self.assertEqual(compat.default_refresh_hz, 60)
+        self.assertEqual(compat.windows_scaling_percent, 125)
+        self.assertIn("骁龙 680", compat.notes)
+        self.assertIn("error -5", compat.notes)
 
     def test_preset_to_monitor(self) -> None:
         preset = DevicePreset(
