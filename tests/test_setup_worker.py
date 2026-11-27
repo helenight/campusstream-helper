@@ -175,7 +175,7 @@ class SetupWorkerOrderTest(unittest.TestCase):
         self.assertEqual(plans[0].manual_resolution, (2360, 1640))
         self.assertEqual(
             summary.pairing_url,
-            "https://localhost:47990/pin",
+            "https://127.0.0.1:47990/pin",
         )
         by_key = {outcome.key: outcome for outcome in outcomes}
         self.assertTrue(by_key["service_initial"].ok)

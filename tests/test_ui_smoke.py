@@ -108,6 +108,17 @@ class UiSmokeTest(unittest.TestCase):
             "一键还原与卸载",
         )
         self.assertTrue(self.window.uninstall_button.isEnabled())
+        self.assertEqual(self.window.diagnostics_button.text(), "排障诊断")
+        self.assertTrue(self.window.diagnostics_button.isEnabled())
+        self.assertEqual(self.window.guide_step.platform_tabs.count(), 2)
+        self.assertEqual(
+            self.window.guide_step.platform_tabs.tabText(0),
+            "安卓平板 / 手机",
+        )
+        self.assertEqual(
+            self.window.guide_step.platform_tabs.tabText(1),
+            "iPad / iPhone",
+        )
 
     def test_theme_switch_updates_stylesheet(self) -> None:
         from ui.theme import DARK_QSS, LIGHT_QSS
@@ -196,7 +207,7 @@ class UiSmokeTest(unittest.TestCase):
             vdd=_environment().vdd,
             device_id="{test}",
             recommended_ip="192.168.1.10",
-            pairing_url="https://localhost:47990/pin",
+            pairing_url="https://127.0.0.1:47990/pin",
             rollback_available=False,
         )
         self.window.summary = summary
@@ -205,17 +216,19 @@ class UiSmokeTest(unittest.TestCase):
         self.assertEqual(self.window.guide_step.ip_label.text(), "192.168.1.10")
         self.assertEqual(
             self.window.guide_step.pairing_label.text(),
-            "https://localhost:47990/pin",
+            "https://127.0.0.1:47990/pin",
         )
-        platform_text = self.window.guide_step.platform_tips.toPlainText()
-        self.assertIn("Settings", platform_text)
-        self.assertIn("Smoothest Video", platform_text)
-        self.assertIn("Optimize Game Settings", platform_text)
-        self.assertIn("台前调度", platform_text)
+        apple_text = self.window.guide_step.apple_tips.toPlainText()
+        self.assertIn("Settings", apple_text)
+        self.assertIn("Smoothest Video", apple_text)
+        self.assertIn("Optimize Game Settings", apple_text)
+        self.assertIn("台前调度", apple_text)
         self.assertTrue(self.window.guide_step.artemis_button.isHidden())
+        self.assertEqual(self.window.guide_step.platform_tabs.currentIndex(), 1)
         general_text = self.window.guide_step.general_tips.toPlainText()
         self.assertIn("优化游戏设置", general_text)
         self.assertIn("150%", general_text)
+        self.assertIn("一键启动服务", general_text)
 
     def test_local_pairing_page_is_available_without_lan_ip(self) -> None:
         summary = SetupSummary(
@@ -226,13 +239,13 @@ class UiSmokeTest(unittest.TestCase):
             vdd=_environment().vdd,
             device_id=None,
             recommended_ip=None,
-            pairing_url="https://localhost:47990/pin",
+            pairing_url="https://127.0.0.1:47990/pin",
             rollback_available=False,
         )
         self.window.guide_step.set_summary(summary)
         self.assertEqual(
             self.window.guide_step.pairing_label.text(),
-            "https://localhost:47990/pin",
+            "https://127.0.0.1:47990/pin",
         )
         self.assertTrue(self.window.guide_step.pair_button.isEnabled())
         self.assertFalse(self.window.guide_step.copy_button.isEnabled())
@@ -254,11 +267,11 @@ class UiSmokeTest(unittest.TestCase):
             vdd=_environment().vdd,
             device_id="{test}",
             recommended_ip="192.168.1.10",
-            pairing_url="https://localhost:47990/pin",
+            pairing_url="https://127.0.0.1:47990/pin",
             rollback_available=False,
         )
         self.window.guide_step.set_summary(summary)
-        platform_text = self.window.guide_step.platform_tips.toPlainText()
+        android_text = self.window.guide_step.android_tips.toPlainText()
         for text in (
             "视频分辨率",
             "本地（你的屏幕分辨率，例如 1920×1200）",
@@ -276,13 +289,134 @@ class UiSmokeTest(unittest.TestCase):
             "自定义非 16:9 分辨率",
             "双指缩放",
             "悬浮控制球",
+            "安卓 16:10 兼容模式",
+            "1680×1050",
+            "骁龙 680",
+            "125%～150%",
+            "error -5",
+            "将画面拉伸至全屏",
+            "拉伸视频以铺满全屏",
         ):
-            self.assertIn(text, platform_text)
+            self.assertIn(text, android_text)
         self.assertFalse(self.window.guide_step.artemis_button.isHidden())
-        error_text = self.window.guide_step.error_tips.toPlainText()
-        self.assertIn("error -5", error_text)
-        self.assertIn("将画面拉伸至全屏", error_text)
-        self.assertIn("拉伸视频以铺满全屏", error_text)
+        self.assertEqual(self.window.guide_step.platform_tabs.currentIndex(), 0)
+
+    def test_pairing_probe_opens_browser_and_warns_certificate(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        summary = SetupSummary(
+            plan=_plan(),
+            outcomes=(),
+            network=_environment().network,
+            sunshine=_environment().sunshine,
+            vdd=_environment().vdd,
+            recommended_ip="192.168.1.10",
+            pairing_url="https://127.0.0.1:47990/pin",
+        )
+        guide = self.window.guide_step
+        guide.set_summary(summary)
+
+        with patch(
+            "ui.steps.step_guide.is_local_port_open",
+            return_value=True,
+        ), patch(
+            "ui.steps.step_guide.QDesktopServices.openUrl",
+        ) as open_url, patch.object(
+            QMessageBox,
+            "information",
+        ) as information:
+            guide._open_pairing()
+
+        open_url.assert_called_once()
+        self.assertEqual(
+            open_url.call_args.args[0].toString(),
+            "https://127.0.0.1:47990/pin",
+        )
+        information.assert_called_once()
+        self.assertIn("自签名证书", information.call_args.args[2])
+
+    def test_pairing_probe_requests_start_when_port_closed(self) -> None:
+        from ui.steps.step_guide import GuideStep
+
+        summary = SetupSummary(
+            plan=_plan(),
+            outcomes=(),
+            network=_environment().network,
+            sunshine=_environment().sunshine,
+            vdd=_environment().vdd,
+            recommended_ip="192.168.1.10",
+            pairing_url="https://127.0.0.1:47990/pin",
+        )
+        # 使用独立 GuideStep，避免信号连到主窗口后真的启动服务线程。
+        guide = GuideStep()
+        self.addCleanup(guide.deleteLater)
+        guide.set_summary(summary)
+        requests: list[bool] = []
+        guide.pairing_service_requested.connect(lambda: requests.append(True))
+
+        with patch(
+            "ui.steps.step_guide.is_local_port_open",
+            return_value=False,
+        ), patch.object(
+            guide,
+            "_confirm_start_service",
+            return_value=True,
+        ):
+            guide._open_pairing()
+
+        self.assertEqual(requests, [True])
+        self.assertFalse(guide.pair_button.isEnabled())
+        self.assertIn("正在启动", guide.pairing_label.text())
+
+    def test_wizard_starts_service_and_reopens_pairing(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from core.common import OperationResult
+        from tests.fakes import FakeRunner
+
+        summary = SetupSummary(
+            plan=_plan(),
+            outcomes=(),
+            network=_environment().network,
+            sunshine=_environment().sunshine,
+            vdd=_environment().vdd,
+            recommended_ip="192.168.1.10",
+            pairing_url="https://127.0.0.1:47990/pin",
+        )
+        self.window.guide_step.set_summary(summary)
+        self.window.env_data = _environment()
+
+        with patch.object(self.window, "_run_task") as run_task, patch(
+            "ui.wizard.start_service",
+            return_value=OperationResult.success("服务已启动"),
+        ) as start, patch(
+            "ui.wizard.wait_for_local_port",
+            return_value=True,
+        ) as wait, patch(
+            "ui.steps.step_guide.QDesktopServices.openUrl",
+        ) as open_url, patch.object(
+            QMessageBox,
+            "information",
+        ):
+            self.window._start_sunshine_for_pairing()
+            worker, callback = run_task.call_args.args
+            result = worker._func(FakeRunner())
+            callback(result)
+
+        start.assert_called_once()
+        wait.assert_called_once()
+        open_url.assert_called_once()
+        self.assertEqual(
+            open_url.call_args.args[0].toString(),
+            "https://127.0.0.1:47990/pin",
+        )
+
+    def test_wizard_reports_missing_sunshine_for_pairing(self) -> None:
+        self.window.env_data = None
+        with patch.object(self.window.guide_step, "pairing_failed") as failed:
+            self.window._start_sunshine_for_pairing()
+        failed.assert_called_once()
+        self.assertIn("Sunshine", failed.call_args.args[0])
 
 
 if __name__ == "__main__":

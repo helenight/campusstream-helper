@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -396,6 +397,18 @@ def snapshot_log_sizes(
     return sizes
 
 
+def sunshine_log_candidates(
+    status: SunshineStatus,
+    *,
+    log_path: Path | None = None,
+) -> tuple[Path, ...]:
+    """返回可能存在的 ``sunshine.log`` 路径（按优先级排序，已去重）。
+
+    诊断报告需要展示实际读取的日志位置，因此公开这层只读查找逻辑。
+    """
+    return tuple(_log_candidates(status, log_path))
+
+
 def wait_for_virtual_display_id(
     runner: CommandRunner,
     status: SunshineStatus,
@@ -712,15 +725,60 @@ def pairing_url(
 ) -> str:
     """生成仅在**本机**打开的 Sunshine 配对页地址。
 
-    Sunshine 默认只允许 localhost 访问 Web UI，因此不要使用局域网 IP：
-    ``https://localhost:<端口>/pin``。
+    Sunshine 默认只允许回环地址访问 Web UI，因此不要使用局域网 IP。
+    这里固定使用 ``127.0.0.1`` 而不是 ``localhost``：部分 Windows 机器的
+    hosts 会把 ``localhost`` 解析到 IPv6 ``::1``，而 Sunshine 只监听 IPv4
+    回环端口，导致浏览器一直打不开。
 
     Args:
         status: 用于读取 ``sunshine.conf`` 中自定义的 ``port``。
         port: 直接指定 Web UI 端口，主要用于测试或特殊部署。
     """
     resolved_port = port if port is not None else pairing_port(status)
-    return f"https://localhost:{resolved_port}/pin"
+    return f"https://127.0.0.1:{resolved_port}/pin"
+
+
+def is_local_port_open(
+    port: int,
+    *,
+    host: str = "127.0.0.1",
+    timeout_s: float = 1.0,
+) -> bool:
+    """用 1 秒超时探测本机 TCP 端口是否正在监听。"""
+    try:
+        resolved_port = int(port)
+    except (TypeError, ValueError):
+        return False
+    if not 1 <= resolved_port <= 65535:
+        return False
+    try:
+        with socket.create_connection(
+            (host, resolved_port),
+            timeout=max(0.1, float(timeout_s)),
+        ):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_local_port(
+    port: int,
+    *,
+    timeout_s: float = 5.0,
+    interval_s: float = 0.5,
+    sleep: Callable[[float], None] = time.sleep,
+    probe: Callable[[int], bool] = is_local_port_open,
+) -> bool:
+    """在限定时间内轮询本机端口，供「一键启动服务」后等待 Web UI 就绪。"""
+    if probe(port):
+        return True
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    interval = max(0.05, interval_s)
+    while time.monotonic() < deadline:
+        sleep(interval)
+        if probe(port):
+            return True
+    return False
 
 
 # ----------------------------------------------------------------------
@@ -884,12 +942,15 @@ def _log_candidates(status: SunshineStatus, explicit: Path | None) -> list[Path]
     if explicit is not None:
         # 显式指定日志时只读取该文件，便于测试与故障复现。
         return [Path(explicit)]
-    candidates: list[Path] = [DEFAULT_INSTALL_DIR / "config" / LOG_FILENAME]
+    # 先使用本次检测到的真实安装路径，避免机器上同时存在旧版 Sunshine 时
+    # 误读 C:\Program Files\Sunshine\config\sunshine.log。
+    candidates: list[Path] = []
     if status.config_path is not None:
         candidates.append(Path(status.config_path).parent / LOG_FILENAME)
     if status.install_dir is not None:
         candidates.append(Path(status.install_dir) / "config" / LOG_FILENAME)
         candidates.append(Path(status.install_dir) / LOG_FILENAME)
+    candidates.append(DEFAULT_INSTALL_DIR / "config" / LOG_FILENAME)
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         base = Path(local_app_data) / "LizardByte" / "Sunshine"
