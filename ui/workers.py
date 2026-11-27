@@ -12,6 +12,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, Signal
 
 from core.common import CommandRunner, OperationResult, default_state_dir
+from core.diagnostics import DiagnosticsReport, collect_diagnostics
 from core.downloader import (
     DEFAULT_VDD_DIR,
     SUNSHINE_PAGE,
@@ -691,7 +692,7 @@ class SetupWorker(QObject):
                 vdd=vdd,
                 device_id=device_id,
                 recommended_ip=recommended_ip,
-                # 配对页必须从本机 localhost 打开；局域网 IP 只用于 Moonlight 连接。
+                # 配对页必须从本机 127.0.0.1 打开；局域网 IP 只用于 Moonlight 连接。
                 pairing_url=(
                     pairing_url(sunshine) if sunshine is not None else pairing_url()
                 ),
@@ -1086,6 +1087,49 @@ class UninstallWorker(QObject):
                 self._options,
                 progress=self.progress.emit,
                 on_step=self.step.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(report)
+
+
+class DiagnosticsWorker(QObject):
+    """在 QThread 中执行只读排障采集，避免阻塞界面。"""
+
+    progress = Signal(int, str)
+    log = Signal(str)
+    finished = Signal(object)        # DiagnosticsReport
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        state_dir: Path | None = None,
+        probe_timeout_s: float = 1.0,
+        collector: Callable[..., DiagnosticsReport] | None = None,
+        runner_factory: Callable[[bool], CommandRunner] | None = None,
+    ) -> None:
+        super().__init__()
+        self._dry_run = dry_run
+        self._state_dir = Path(state_dir) if state_dir is not None else None
+        self._probe_timeout_s = probe_timeout_s
+        self._collector = collector or collect_diagnostics
+        self._runner_factory = runner_factory or (
+            lambda dry: CommandRunner(dry_run=dry, log_sink=self.log.emit)
+        )
+
+    def run(self) -> None:
+        self.progress.emit(0, "准备收集排障信息…")
+        try:
+            runner = self._runner_factory(self._dry_run)
+            report: DiagnosticsReport = self._collector(
+                runner,
+                dry_run=self._dry_run,
+                state_dir=self._state_dir,
+                progress=self.progress.emit,
+                probe_timeout_s=self._probe_timeout_s,
             )
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
