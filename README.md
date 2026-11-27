@@ -2,7 +2,7 @@
 
 > 跨端远控一键配置助手：把 Sunshine + Moonlight + Virtual Display Driver 的 Windows 端配置，收进一个 4 步图形化向导。
 
-![status](https://img.shields.io/badge/status-v0.2.3%20%C2%B7%20release-green)
+![status](https://img.shields.io/badge/status-v0.3.0%20%C2%B7%20release-green)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -30,12 +30,14 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | 模块 | 能力 |
 |---|---|
 | **A. 环境与网络体检** | 管理员、GPU、Sunshine、VDD、网络五项逐项检测；四态徽章与实时进度；区分有线 / 无线 IPv4；提取全局 IPv6（排除 `fe80::` 与临时地址）；校园网 AP 隔离提示；`ms_tcpip6` 绑定一键修复；`netsh advfirewall` 放行 Sunshine |
-| **B. 虚拟显示器与预设** | 检测 VDD 安装；内置 iPad / Android 平板 / 手机 / iPhone 预设；支持多选与自定义分辨率；安全注入 `vdd_settings.xml`；重载驱动；`DisplaySwitch /internal` 防止窗口跑偏 |
+| **B. 虚拟显示器与预设** | 检测 VDD 安装；内置 iPad / Android 平板 / 手机 / iPhone 预设，含安卓 16:10 兼容模式（1680×1050 @ 60Hz，适配骁龙 680）；支持多选与自定义分辨率；安全注入 `vdd_settings.xml`；重载驱动；`DisplaySwitch /internal` 防止窗口跑偏 |
 | **C. Sunshine 自动化** | 检测安装目录与服务；从最新启动日志或 `dxgi-info.exe` 提取虚拟屏 `{device_id}`；写入 `address_family`、`output_name`、`dd_configuration_option`、`dd_config_revert_on_disconnect`、`dd_resolution_option=manual/auto` 与 `dd_manual_resolution`；一键重启服务 |
 | **D. 电源保活** | 插电永不休眠、10 分钟后自动关屏；保存原配置并支持一键还原 |
-| **E. 四步向导 UI** | 环境自检 → 设备定制 → 后台执行（实时日志 / 进度 / 回滚）→ 分平台配对指引 |
+| **E. 四步向导 UI** | 环境自检 → 设备定制 → 后台执行（实时日志 / 进度 / 回滚）→ 分平台配对指引；Step 4 使用「安卓平板 / 手机」与「iPad / iPhone」双 Tab 教程 |
 | **F. 依赖自动安装** | 解析 GitHub 最新 Sunshine / VDD Release，匹配 CPU 架构，校验文件大小后安装；可选 GitHub 加速代理；失败时打开浏览器手动下载或选择本地安装包 |
 | **G. 深浅色主题** | 跟随系统 / 浅色 / 深色三档切换；主窗口、对话框、输入框、日志与状态徽章全部适配 |
+| **H. 一键还原与卸载** | 六项勾选清理；固定安全顺序；二次确认；Dry-Run；QThread 实时进度；精确匹配 VDD / Sunshine，避免误删其他虚拟显示器或同名软件 |
+| **I. 一键排障与诊断报告** | 右上角「排障诊断」只读收集系统代理、显示/显卡、Sunshine 深度检查、VDD、网络防火墙、运行日志与 traceback；生成 Markdown；默认自动脱敏；支持一键复制与导出 |
 
 ## 适用人群
 
@@ -50,6 +52,7 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 - **最小权限**：仅在防火墙、服务、驱动重载、`powercfg` 等必要操作时要求管理员权限；自动安装前会再次确认，非管理员运行时默认建议先 Dry-Run。
 - **写入前备份**：任何配置文件修改前自动生成 `*.bak`，回滚时优先使用备份。
 - **Dry-Run 模拟运行**：开启后所有写操作只记录日志，不碰系统；自动安装只解析版本、下载链接与将执行的命令，不下载、不解压、不安装。
+- **卸载同样支持 Dry-Run**：一键还原与卸载必须二次确认；真实执行按「切回主屏 → 停 Sunshine 服务 → 卸载 VDD → 卸载 Sunshine → 防火墙 / 电源 / 缓存」的安全顺序，且会拒绝删除磁盘根目录或非本软件目录。
 - **可回滚**：配置写入、VDD 条目、电源设置与防火墙规则均提供还原路径。
 - **下载安全**：只接受 HTTPS 资产链接，按 GitHub API 返回的大小校验；ZIP 解压拒绝绝对路径、`..` 与符号链接，并保留已有 `vdd_settings.xml`。
 
@@ -65,6 +68,8 @@ CampusStream Helper 面向使用 **iPad、Android 平板、Android / iOS 手机*
 | v0.2.1 | 修复 Step 3 虚拟屏 `device_id` 提取、执行顺序与日志诊断 | ✅ 已完成（135 个测试） |
 | v0.2.2 | 移除日志标题依赖、轮询新增日志、增加 PnP 与末尾日志诊断 | ✅ 已完成（138 个测试） |
 | v0.2.3 | 固定分辨率、localhost 配对页、Step 4 分平台指引与 Artemis 推荐 | ✅ 已完成（145 个测试） |
+| v0.2.4 | `sunshinesvc.exe` 专项检测、安装后自动拉起服务、VDD 首次安装引导、一键还原与卸载 | ✅ 已完成（200 个测试） |
+| v0.3.0 | 一键排障与 Markdown 诊断报告、127.0.0.1 配对页探活与一键启动服务、16:10 预设、Step 4 双 Tab 教程 | ✅ 已完成（222 个测试） |
 
 Phase 2 已通过 39 个单元测试，并在本机完成只读实机检测（Sunshine / VDD / 网卡 / 电源）与 Dry-Run 演练。
 Phase 3 在此基础上接入四步向导：后台检测 / 执行线程、实时日志、进度条、失败回滚与分平台配对指引。
@@ -73,6 +78,25 @@ v0.2.0 新增主题管理、五项环境逐项检测和依赖自动安装，测�
 v0.2.1 修复 Step 3 在虚拟屏未激活时提取 `device_id` 失败的问题，测试总数达到 **135 个**。
 v0.2.2 根据朋友电脑实测日志进一步修复日志标题依赖与启动慢问题，测试总数达到 **138 个**。
 v0.2.3 完成全新电脑与安卓平板实测修复，覆盖固定分辨率、localhost 配对页、中文菜单指引与 Artemis 客户端推荐，测试总数达到 **145 个**。
+v0.2.4 增加 Sunshine 服务文件专项检测、安装后自动拉起服务、VDD 首次安装引导，以及主界面右上角的一键还原与卸载，测试总数达到 **200 个**。
+v0.3.0 新增一键排障诊断报告、127.0.0.1 配对页探活与一键启动服务、安卓 16:10 兼容预设，并把 Step 4 重构为双 Tab 教程，测试总数达到 **222 个**。
+
+### v0.3.0 更新内容
+
+- **一键排障与诊断报告**：右上角新增「排障诊断」，在 QThread 中只读收集六大板块——系统与代理、显示/显卡、Sunshine 深度检查、VDD、网络与防火墙、程序运行日志与最近 traceback；自动检查 `127.0.0.1` 的 47984 / 47989 / 47990 / 48010 端口，并读取完整 `sunshine.conf`、最后 50 行 `sunshine.log` 与完整 `vdd_settings.xml`。
+- **自动脱敏与导出**：报告默认把 `C:\Users\<用户名>` 替换为 `C:\Users\<USER>`，隐藏 password / token / PIN 等敏感值；支持一键复制，或导出为 `diagnostic_report.md`。
+- **修复 `localhost:47990` 打不开**：配对页固定改为 `https://127.0.0.1:<端口>/pin`，避免 Windows 把 `localhost` 解析到 IPv6 `::1`；打开前用 1 秒 socket 探活。端口未监听时弹窗提供「一键启动服务」，启动 `SunshineService` 并等待端口就绪后自动打开浏览器；首次打开提示本机自签名证书处理方式。
+- **安卓 16:10 兼容预设**：新增「安卓 16:10 兼容模式」，1680×1050 @ 60Hz、Windows 缩放 125%～150%，适配骁龙 680 等 1080p 硬件解码上限的入门平板，减少 `error -5` 与四面黑边。
+- **Step 4 双 Tab 教程**：顶部切换「安卓平板 / 手机」与「iPad / iPhone」，分别提供客户端下载、中文 / 英文菜单设置、16:10 兼容模式、黑边与 `error -5` 排雷、iPad 外接键鼠设置。
+- **运行日志**：新增 `%LOCALAPPDATA%\CampusStreamHelper\app.log` 轮转日志（1 MB × 2），诊断报告可直接附带最近运行记录。
+
+### v0.2.4 更新内容
+
+- **`sunshinesvc.exe` 缺失专项检测**：Step 1 同时检查 `tools\sunshinesvc.exe`、`SunshineService` 的 `ImagePath` 指向文件是否存在；发现被 360 等杀软误删时标红，并提示先将安装目录加入信任区，再点「重新修复安装」。
+- **安装后自动拉起服务**：Sunshine MSI 安装成功后自动执行 `Start-Service SunshineService`，无需手动双击桌面图标；失败时提示到 Step 1 手动启动。
+- **VDD 首次安装引导**：解压后先检查 `Get-PnpDevice -Class Display` 是否已有状态 `OK` 的虚拟屏；未就绪时自动打开部署目录中的 `VDD.Control.exe`，弹窗提示 `Virtual Display Driver → System → Install Driver`，并在后台等待驱动就绪后自动刷新 Step 1。
+- **一键还原与卸载**：主界面右上角新增入口，可勾选恢复显示模式、还原电源、移除防火墙、卸载 Sunshine、卸载 VDD、清理缓存；严格按「切回主屏 → 停 Sunshine 服务 → 卸载 VDD → 卸载 Sunshine → 防火墙 / 电源 / 缓存」执行，支持 Dry-Run、二次确认与 QThread 实时进度。
+- **误删防护**：VDD 只匹配 `Virtual Display Driver` / `VirtualDisplayDriver` / `VirtualDrivers` / 独立单词 `VDD`，不会误删 `GameViewer Virtual Display Adapter`；Sunshine 只接受精确名称或 LizardByte 发布者，避免误删同名软件。
 
 ### v0.2.3 修复内容
 
@@ -118,15 +142,17 @@ v0.2.3 完成全新电脑与安卓平板实测修复，覆盖固定分辨率、l
 
 ### 普通用户（下载 exe）
 
-1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.2.3.exe`。
+1. 打开 GitHub 的 **Releases** 页面，下载 `CampusStreamHelper-v0.3.0.exe`。
 2. 可选校验：在下载目录运行
-   `Get-FileHash .\CampusStreamHelper-v0.2.3.exe -Algorithm SHA256`，
+   `Get-FileHash .\CampusStreamHelper-v0.3.0.exe -Algorithm SHA256`，
    与 Release 说明中的 SHA256 对比。
 3. 双击启动；程序会自己检测权限并提示提权。也可以右键 → **以管理员身份运行**。
 4. 按向导完成 4 步：环境自检 → 选择客户端与机型 → 一键配置 → 按指引在平板 / 手机上配对。
 5. 若 Step 1 检测到 Sunshine / VDD 缺失，点击「一键自动下载安装」；GitHub 访问慢时可在对话框填写加速代理，失败时也可手动下载或选择本地安装包。
 6. 右上角可切换「跟随系统 / 浅色 / 深色」主题。
 7. 若配置后桌面窗口位置异常，点击向导提供的 **「切回仅电脑屏幕」**。
+8. 不再使用时，点击右上角 **「一键还原与卸载」**，可勾选恢复显示模式、还原电源、移除防火墙、卸载 Sunshine / VDD 与清理缓存；建议先勾选 Dry-Run 预览。
+9. 连接异常时，点击右上角 **「排障诊断」**，生成默认脱敏的 Markdown 报告；可一键复制或导出为 `diagnostic_report.md` 后再排查 / 求助。
 
 > 单文件程序无需安装 Python，也不会写入注册表卸载项；运行状态、日志与回滚清单保存在 `%LOCALAPPDATA%\CampusStreamHelper`。
 >
@@ -150,7 +176,7 @@ python -m venv .venv
 # 4. 或只检测、不写入：Dry-Run 模式
 .\.venv\Scripts\python.exe main.py --dry-run
 
-# 5. 运行全部测试（当前 145 个）
+# 5. 运行全部测试（当前 222 个）
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 Remove-Item Env:\QT_QPA_PLATFORM
@@ -159,9 +185,9 @@ Remove-Item Env:\QT_QPA_PLATFORM
 .\packaging\build.ps1
 ```
 
-> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.2.3.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
+> 打包产物：`dist\CampusStreamHelper.exe` 与带版本号的 `dist\CampusStreamHelper-v0.3.0.exe`。构建脚本会先运行全部测试，再用 `--smoke-test` 验证打包后的程序能加载设备预设并输出版本号。
 >
-> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.2.3 单文件为 49,253,477 字节（约 47.0 MiB），构建完成后终端会打印实际体积与 SHA256。
+> `requirements.txt` 只依赖 `PySide6-Essentials`（不含 WebEngine / Addons）；XML、ZIP 与下载逻辑均使用标准库。本机 v0.3.0 单文件体积与 SHA256 以构建脚本最终输出为准。
 
 ## 发布流程（维护者）
 
@@ -172,31 +198,31 @@ Remove-Item Env:\QT_QPA_PLATFORM
 # 2. 打包（自动测试 + 冒烟测试，输出体积与 SHA256）
 .\packaging\build.ps1
 
-# 3. 本地验收（会打开界面，建议先看是否显示 v0.2.3）
-.\dist\CampusStreamHelper-v0.2.3.exe --dry-run
+# 3. 本地验收（会打开界面，建议先看是否显示 v0.3.0）
+.\dist\CampusStreamHelper-v0.3.0.exe --dry-run
 
 # 4. 提交源码（dist/、build/ 与 *.bak 已被 .gitignore 排除）
 git add README.md core packaging tests ui
-git commit -m "build: 发布 v0.2.3"
+git commit -m "build: 发布 v0.3.0"
 
-# 5. 合并修复分支到 main
+# 5. 合并功能分支到 main
 git switch main
 git pull --ff-only origin main
-git merge --no-ff fix/v0.2.3 -m "merge: 发布 v0.2.3"
+git merge --no-ff feature/v0.3.0 -m "merge: 发布 v0.3.0"
 git push origin main
 
-# 6. 打附注标签并推送（v0.2.1 / v0.2.2 已发布，保持不动）
-git tag -a v0.2.3 -m "CampusStream Helper v0.2.3"
-git push origin v0.2.3
+# 6. 打附注标签并推送（v0.2.1 / v0.2.2 / v0.2.3 / v0.2.4 已发布，保持不动）
+git tag -a v0.3.0 -m "CampusStream Helper v0.3.0"
+git push origin v0.3.0
 ```
 
-随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.2.3` → 上传
-`dist\CampusStreamHelper-v0.2.3.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
+随后在 GitHub 仓库页：**Releases → Draft a new release** → 选择标签 `v0.3.0` → 上传
+`dist\CampusStreamHelper-v0.3.0.exe` → 把构建脚本输出的 SHA256 写进说明 → **Publish release**。
 
 > `git pull --ff-only` 只允许快进合并；如果失败，说明远端 `main` 有新提交，应先查看差异再处理。
-> **v0.2.1 / v0.2.2 已经发布，不要删除、移动或用强制推送覆盖它们的标签。** 本次只新增 `v0.2.3`。
-> `dist\` 中可能残留旧版本 exe，它们只是本地构建产物；本次只上传 `CampusStreamHelper-v0.2.3.exe`。
-> 如果 `v0.2.3` 标签只在本地打错且尚未推送，可先 `git tag -d v0.2.3` 再重打；若已经推送，不要改写历史，改用 `v0.2.4` 发布修正。
+> **v0.2.1 / v0.2.2 / v0.2.3 / v0.2.4 已经发布，不要删除、移动或用强制推送覆盖它们的标签。** 本次只新增 `v0.3.0`。
+> `dist\` 中可能残留旧版本 exe，它们只是本地构建产物；本次只上传 `CampusStreamHelper-v0.3.0.exe`。
+> 如果 `v0.3.0` 标签只在本地打错且尚未推送，可先 `git tag -d v0.3.0` 再重打；若已经推送，不要改写历史，改用 `v0.3.1` 发布修正。
 > 全程不要使用 `git push --force`。
 
 ## 四步向导会做什么
@@ -204,7 +230,7 @@ git push origin v0.2.3
 1. **环境自检**：后台逐项检测管理员权限、GPU、Sunshine、VDD 与网络，显示实时进度、四态徽章、完成时间和修复按钮；检测到 Sunshine / VDD 缺失时可直接打开自动下载安装。
 2. **客户端与设备定制**：选择 iPadOS / Android 平板 / Android 手机 / iPhone，勾选机型分辨率或填写自定义分辨率；勾选防火墙放行与防休眠。
 3. **一键配置执行**：后台线程执行，实时滚动日志、进度条、失败项提示与一键回滚。
-4. **配对与避坑指引**：分开显示「填进 Moonlight 的 PC 地址」与「本机 `https://localhost:47990/pin` 配对页」，并按 Android 中文菜单 / iPadOS 与 iOS 英文菜单分别给出设置清单和报错排雷。
+4. **配对与避坑指引**：分开显示「填进 Moonlight 的 PC 地址」与「本机 `https://127.0.0.1:47990/pin` 配对页」；打开前自动探活，未监听时可一键启动 SunshineService。下方使用「安卓平板 / 手机」与「iPad / iPhone」双 Tab，分别给出中文 / 英文菜单设置、16:10 兼容模式与报错排雷。
 
 ## 客户端推荐（Android 平板 / 手机）
 
@@ -239,19 +265,23 @@ streamhelper/
 │  ├─ detection.py             # 五项检测模型与四态徽章
 │  ├─ gpu.py                   # WMI 显卡检测
 │  ├─ downloader.py            # GitHub Release 解析 / 下载 / 安装
+│  ├─ diagnostics.py           # 只读排障采集、脱敏与 Markdown 报告
 │  ├─ network.py               # 模块 A：网络、IPv6、防火墙
 │  ├─ vdd.py                   # 模块 B：VDD 检测、预设、XML 注入
-│  ├─ sunshine.py              # 模块 C：Sunshine 检测与配置
+│  ├─ sunshine.py              # 模块 C：Sunshine 检测、配置与配对探活
 │  ├─ power.py                 # 模块 D：电源保活
+│  ├─ uninstaller.py           # 一键还原与卸载核心
 │  └─ plan.py                  # SetupPlan / StepOutcome / SetupSummary
 ├─ ui/
 │  ├─ __init__.py
 │  ├─ wizard.py                # 四步主窗口、导航与提权
 │  ├─ theme.py                 # 深浅色主题、系统探测与 QSS
-│  ├─ workers.py               # QThread 检测 / 执行 / 回滚 / 下载安装
+│  ├─ workers.py               # QThread 检测 / 执行 / 回滚 / 下载安装 / 诊断 / 卸载
 │  ├─ widgets.py               # Card / StatusPill / InfoRow / Banner
 │  ├─ dialogs/
-│  │  └─ package_dialog.py     # 自动下载安装对话框
+│  │  ├─ package_dialog.py     # 自动下载安装对话框
+│  │  ├─ diagnostics_dialog.py # 排障诊断、脱敏复制与导出
+│  │  └─ uninstall_dialog.py   # 一键还原与卸载勾选 / 确认 / 进度
 │  └─ steps/
 │     ├─ step_environment.py   # Step 1：逐项环境自检
 │     ├─ step_devices.py       # Step 2：平台与分辨率
@@ -279,6 +309,8 @@ streamhelper/
 │  ├─ test_step_environment.py # Step 1 进度与四态徽章
 │  ├─ test_package_worker.py   # 下载安装 Worker
 │  ├─ test_package_dialog.py   # 下载安装对话框
+│  ├─ test_diagnostics.py      # 诊断采集 / 脱敏 / 失败隔离
+│  ├─ test_diagnostics_dialog.py # 诊断对话框复制 / 导出 / 失败态
 │  ├─ test_ui_smoke.py         # 离屏 UI 冒烟（不弹窗、不写系统）
 │  └─ test_packaging.py        # 清单 / 版本 / 图标 / spec 资源校验
 ├─ main.py                     # 程序入口（GUI + 崩溃日志 + --dry-run / --smoke-test）

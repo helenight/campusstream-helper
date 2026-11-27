@@ -24,9 +24,14 @@ from core.common import CommandRunner, OperationResult
 from core.network import enable_ipv6_binding, ensure_firewall_rule
 from core.plan import SetupPlan, SetupSummary
 from core.privileges import is_admin, relaunch_as_admin
-from core.sunshine import restart_service
+from core.sunshine import (
+    pairing_port,
+    restart_service,
+    start_service,
+    wait_for_local_port,
+)
 from core.vdd import restore_native_display
-from ui.dialogs import PackageInstallDialog
+from ui.dialogs import DiagnosticsDialog, PackageInstallDialog, UninstallDialog
 from ui.steps.step_devices import DevicesStep
 from ui.steps.step_environment import EnvironmentStep
 from ui.steps.step_execute import ExecuteStep
@@ -103,6 +108,7 @@ class WizardWindow(QMainWindow):
         self._task_thread: QThread | None = None
         self._task_worker: FunctionWorker | None = None
         self._package_dialog: PackageInstallDialog | None = None
+        self._diagnostics_dialog: DiagnosticsDialog | None = None
         self._package_install_done = False
         self._package_refresh_timer = QTimer(self)
         self._package_refresh_timer.setSingleShot(True)
@@ -188,6 +194,19 @@ class WizardWindow(QMainWindow):
         self.step_counter.setObjectName("Muted")
         header.addWidget(self.step_counter)
         header.addSpacing(10)
+        self.diagnostics_button = make_button("排障诊断", "secondary")
+        self.diagnostics_button.setToolTip(
+            "只读收集系统、Sunshine、VDD、网络与日志信息，"
+            "生成可脱敏的 Markdown 报告。"
+        )
+        header.addWidget(self.diagnostics_button)
+        header.addSpacing(6)
+        self.uninstall_button = make_button("一键还原与卸载", "danger")
+        self.uninstall_button.setToolTip(
+            "恢复显示模式、还原电源、移除防火墙，并可卸载 Sunshine 与 VDD。"
+        )
+        header.addWidget(self.uninstall_button)
+        header.addSpacing(6)
         self.theme_switcher = ThemeSwitcher(self.theme)
         header.addWidget(self.theme_switcher)
         content_layout.addLayout(header)
@@ -237,6 +256,11 @@ class WizardWindow(QMainWindow):
         self.execute_step.execution_started.connect(self._on_execution_started)
         self.execute_step.busy_changed.connect(self._on_busy_changed)
         self.guide_step.restore_display_requested.connect(self._restore_display)
+        self.guide_step.pairing_service_requested.connect(
+            self._start_sunshine_for_pairing
+        )
+        self.diagnostics_button.clicked.connect(self._open_diagnostics_dialog)
+        self.uninstall_button.clicked.connect(self._open_uninstall_dialog)
         self.dry_run_check.toggled.connect(self._on_dry_run_toggled)
         self.back_button.clicked.connect(self._go_back)
         self.next_button.clicked.connect(self._go_next)
@@ -359,6 +383,7 @@ class WizardWindow(QMainWindow):
                 or not sunshine.installed
                 or vdd is None
                 or not vdd.installed
+                or not vdd.device_ready
             ):
                 answer = QMessageBox.question(
                     self,
@@ -497,6 +522,7 @@ class WizardWindow(QMainWindow):
 
     def _on_busy_changed(self, busy: bool) -> None:
         self.dry_run_check.setEnabled(not busy)
+        self.uninstall_button.setEnabled(not busy)
         self._update_nav()
 
     def _on_selection_changed(self) -> None:
@@ -634,12 +660,17 @@ class WizardWindow(QMainWindow):
 
         def on_installed(name: str) -> None:
             self._package_install_done = True
-            self.statusBar().showMessage(
-                f"{'Sunshine' if name == 'sunshine' else 'VDD'} 安装完成，"
-                "正在重新检测环境…",
-                6000,
-            )
-            self._package_refresh_timer.start(1500)
+            if name == "sunshine":
+                message = (
+                    "Sunshine 安装完成，服务已在后台自启；"
+                    "无需手动双击桌面 Sunshine 图标"
+                )
+                delay_ms = 4000
+            else:
+                message = "VDD 安装流程结束，正在重新检测驱动状态…"
+                delay_ms = 1200
+            self.statusBar().showMessage(message, 8000)
+            self._package_refresh_timer.start(delay_ms)
 
         dialog.installed.connect(on_installed)
         dialog.exec()
@@ -647,6 +678,89 @@ class WizardWindow(QMainWindow):
         if self._package_install_done and self._package_refresh_timer.isActive():
             self._package_refresh_timer.stop()
             self.refresh_environment()
+
+    def _open_diagnostics_dialog(self) -> None:
+        """打开只读排障诊断；采集期间仍可继续操作主界面之外的其他窗口。"""
+        if self._diagnostics_dialog is not None and self._diagnostics_dialog.isVisible():
+            self._diagnostics_dialog.raise_()
+            self._diagnostics_dialog.activateWindow()
+            return
+        dialog = DiagnosticsDialog(
+            self,
+            dry_run=self.dry_run,
+            theme=self.theme,
+        )
+        self._diagnostics_dialog = dialog
+        dialog.exec()
+        self._diagnostics_dialog = None
+        if dialog.report is not None and dialog.report.failed_sections:
+            self.statusBar().showMessage(
+                "诊断完成，但存在采集失败的板块；可查看报告中的失败原因",
+                8000,
+            )
+        elif dialog.report is not None:
+            self.statusBar().showMessage("诊断报告已生成，可复制或导出", 6000)
+
+    def _open_uninstall_dialog(self) -> None:
+        """打开勾选式清理/卸载窗口；真实执行后重新检测环境。"""
+        if (
+            self._detecting
+            or self.execute_step.is_busy
+            or (
+                self._task_thread is not None
+                and self._task_thread.isRunning()
+            )
+        ):
+            QMessageBox.information(
+                self,
+                "请稍候",
+                "当前有检测或配置任务正在执行，请完成后再打开清理与卸载。",
+            )
+            return
+
+        vdd_dir = None
+        if self.env_data is not None and self.env_data.vdd is not None:
+            vdd_dir = self.env_data.vdd.install_dir
+        dialog = UninstallDialog(
+            self,
+            dry_run=self.dry_run,
+            vdd_install_dir=vdd_dir,
+            theme=self.theme,
+        )
+        dialog.exec()
+        if not dialog.executed:
+            return
+        if dialog.was_dry_run:
+            self.statusBar().showMessage(
+                "Dry-Run 清理预览完成，未修改系统",
+                6000,
+            )
+            return
+
+        report = dialog.report
+        self.pending_plan = None
+        self.summary = None
+        self.execute_step.reset()
+        self.guide_step.clear()
+        self._refresh_sidebar()
+        self._update_nav()
+        if report is None:
+            self.statusBar().showMessage(
+                "清理任务异常结束，请查看清理日志",
+                8000,
+            )
+        elif report.failed_steps:
+            self.statusBar().showMessage(
+                "清理完成但存在失败项，请查看清理日志",
+                8000,
+            )
+        else:
+            self.statusBar().showMessage(
+                "清理与卸载完成，正在重新检测环境…",
+                8000,
+            )
+        self._go_to(0)
+        self.refresh_environment()
 
     def _restart_sunshine(self) -> None:
         sunshine = self.env_data.sunshine if self.env_data else None
@@ -660,6 +774,68 @@ class WizardWindow(QMainWindow):
             ),
             self._on_repair_finished,
         )
+
+    def _start_sunshine_for_pairing(self) -> None:
+        """Step 4 配对页未监听时，一键启动 SunshineService 并等待端口。"""
+        sunshine = self.env_data.sunshine if self.env_data else None
+        if sunshine is None or not sunshine.installed:
+            self.guide_step.pairing_failed(
+                "未检测到 Sunshine 安装信息，请先安装，或回到 Step 1 点击"
+                "「重新修复安装」。"
+            )
+            return
+        if self._task_thread is not None and self._task_thread.isRunning():
+            self.guide_step.reset_pairing_state()
+            QMessageBox.information(
+                self,
+                "请稍候",
+                "已有任务正在执行，请完成后再启动 Sunshine 服务。",
+            )
+            return
+
+        port = pairing_port(sunshine)
+        service_name = sunshine.service_name
+
+        def start_and_wait(runner: CommandRunner) -> OperationResult:
+            try:
+                result = start_service(runner, service_name)
+                if not result.ok or result.simulated:
+                    return result
+                if wait_for_local_port(port, timeout_s=5.0):
+                    return OperationResult.success(
+                        f"Sunshine 服务已启动，127.0.0.1:{port} 已监听",
+                        details=result.details,
+                    )
+                return OperationResult.failure(
+                    f"服务已启动，但 127.0.0.1:{port} 仍未监听。"
+                    "请点击右上角「排障诊断」查看端口、服务与日志。",
+                    details=result.details,
+                )
+            except Exception as exc:
+                return OperationResult.failure(
+                    f"启动服务时发生异常：{type(exc).__name__}: {exc}"
+                )
+
+        self._run_task(
+            FunctionWorker(start_and_wait, dry_run=self.dry_run),
+            self._on_pairing_service_started,
+        )
+
+    def _on_pairing_service_started(self, result: OperationResult) -> None:
+        if result.simulated:
+            QMessageBox.information(
+                self,
+                "Dry-Run 模拟",
+                f"{result.message}\n\n"
+                "当前是 Dry-Run，未实际启动服务；关闭 Dry-Run 后重试即可打开配对页。",
+            )
+            self.guide_step.reset_pairing_state()
+            return
+        if result.ok:
+            self.statusBar().showMessage(result.message, 6000)
+            self.guide_step.resume_pairing()
+            return
+        self.guide_step.pairing_failed(result.message)
 
     def _add_firewall(self) -> None:
         sunshine = self.env_data.sunshine if self.env_data else None

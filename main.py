@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core import __version__
 from core.common import default_state_dir, resource_path
+from core.diagnostics import configure_file_logging
 from core.privileges import is_admin, relaunch_as_admin
 from ui.theme import ThemeManager
 from ui.wizard import WizardWindow
@@ -84,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     app = QApplication([sys.argv[0]])
+    # 诊断报告需要读取本次运行的 app.log；打包为无控制台 exe 时同样有效。
+    configure_file_logging()
     app.setApplicationName("CampusStream Helper")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("CampusStream Helper Contributors")

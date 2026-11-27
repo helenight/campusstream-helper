@@ -127,6 +127,18 @@
       "notes": "Y700 系列可在自定义模式中选择 144Hz；请确认 Moonlight 内已解除帧率限制。"
     },
     {
+      "id": "android_16_10_compat",
+      "platform": "android_tablet",
+      "label": "安卓 16:10 兼容模式",
+      "width": 1680,
+      "height": 1050,
+      "refresh_options": [60],
+      "default_refresh_hz": 60,
+      "windows_scaling_percent": 125,
+      "aspect_ratio": "16:10",
+      "notes": "适配骁龙 680 等 1080p 硬件解码上限的入门平板：1680×1050 @ 60Hz，Windows 缩放建议 125%～150%；画面零黑边，通常不会报 error -5。"
+    },
+    {
       "id": "android-phone-20-9",
       "platform": "android_phone",
       "label": "Android 手机（通用 20:9）",

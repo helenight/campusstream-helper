@@ -119,6 +119,8 @@ class VddStatus:
     configured_monitor_count: int
     configured_resolution_count: int
     detail: str
+    # Get-PnpDevice -Class Display 中是否至少有一个虚拟屏状态为 OK。
+    device_ready: bool = True
 
 
 def load_device_presets(path: Path | None = None) -> tuple[DevicePreset, ...]:
@@ -216,6 +218,12 @@ def detect_vdd(
         if _is_virtual_display_name(str(controller.get("Name") or ""))
     ]
     installed = bool(matched_devices or matched_controllers or settings_path)
+    ready_devices = [
+        device
+        for device in matched_devices
+        if str(device.get("Status") or "").strip().casefold() == "ok"
+    ]
+    device_ready = bool(ready_devices)
 
     driver_version = None
     if matched_controllers:
@@ -228,7 +236,12 @@ def detect_vdd(
     if settings_path is not None:
         schema, monitor_count, resolution_count, parse_detail = _inspect_settings(settings_path)
 
-    if installed and settings_path is None:
+    if installed and not device_ready:
+        detail = (
+            "已部署 Virtual Display Driver 文件，但 Get-PnpDevice 中"
+            "没有状态为 OK 的虚拟屏设备；请运行 VDD Control 完成驱动安装。"
+        )
+    elif installed and settings_path is None:
         detail = "已检测到 Virtual Display Driver，但未找到 vdd_settings.xml，请手动指定安装目录。"
     elif installed:
         detail = (
@@ -249,6 +262,7 @@ def detect_vdd(
         configured_monitor_count=monitor_count,
         configured_resolution_count=resolution_count,
         detail=detail,
+        device_ready=device_ready,
     )
     runner.log(f"[VDD] {detail}")
     return status

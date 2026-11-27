@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.common import CommandRunner
+from core.common import CommandResult, CommandRunner
 from core.sunshine import (
     SunshineConfigPlan,
     SunshineStatus,
@@ -19,10 +19,13 @@ from core.sunshine import (
     default_resolution_mode,
     detect_sunshine,
     find_virtual_display_id,
+    is_local_port_open,
     pairing_port,
     pairing_url,
     read_config,
     snapshot_log_sizes,
+    start_service,
+    wait_for_local_port,
     wait_for_virtual_display_id,
 )
 from tests.fakes import FakeRunner
@@ -692,9 +695,63 @@ class SunshineDetectionTest(unittest.TestCase):
         status = detect_sunshine(runner, search_roots=[])
         self.assertEqual(status.service_state, "stopped")
 
-    def test_pairing_url_uses_localhost_and_pin(self) -> None:
-        self.assertEqual(pairing_url(), "https://localhost:47990/pin")
-        self.assertEqual(pairing_url(port=49000), "https://localhost:49000/pin")
+    def test_detect_service_binary_and_image_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "sunshine.exe").write_text("stub", encoding="utf-8")
+            tools = root / "tools"
+            tools.mkdir()
+            service_exe = tools / "sunshinesvc.exe"
+            service_exe.write_text("stub", encoding="utf-8")
+            payload = {
+                "apps": [],
+                "service": {
+                    "Name": "SunshineService",
+                    "Status": "Running",
+                    "ImagePath": f'"{service_exe}" --service',
+                },
+            }
+            runner = FakeRunner(powershell_response=json.dumps(payload))
+            status = detect_sunshine(runner, search_roots=[root])
+
+            self.assertTrue(status.sunshinesvc_exists)
+            self.assertEqual(status.service_image_path, service_exe)
+            self.assertTrue(status.service_image_exists)
+            self.assertFalse(status.service_binary_missing)
+
+            service_exe.unlink()
+            status = detect_sunshine(runner, search_roots=[root])
+            self.assertFalse(status.sunshinesvc_exists)
+            self.assertFalse(status.service_image_exists)
+            self.assertTrue(status.service_binary_missing)
+            self.assertIn("缺失", status.detail)
+
+    def test_start_service_success(self) -> None:
+        runner = FakeRunner()
+        result = start_service(runner)
+        self.assertTrue(result.ok)
+        self.assertIn("已在后台启动", result.message)
+        self.assertIn("Start-Service", runner.powershell_mutations[0])
+
+    def test_start_service_failure(self) -> None:
+        runner = FakeRunner()
+        failed = CommandResult(("pwsh",), 1, stderr="Access is denied")
+        with patch.object(runner, "mutate_powershell", return_value=failed):
+            result = start_service(runner)
+        self.assertFalse(result.ok)
+        self.assertIn("启动服务", result.message)
+        self.assertIn("Access is denied", result.details[0])
+
+    def test_start_service_dry_run(self) -> None:
+        result = start_service(FakeRunner(dry_run=True))
+        self.assertTrue(result.ok)
+        self.assertTrue(result.simulated)
+        self.assertIn("[DRY-RUN]", result.message)
+
+    def test_pairing_url_uses_ipv4_loopback_and_pin(self) -> None:
+        # 强制使用 127.0.0.1，避免 localhost 被解析到 IPv6 ::1 后打不开。
+        self.assertEqual(pairing_url(), "https://127.0.0.1:47990/pin")
+        self.assertEqual(pairing_url(port=49000), "https://127.0.0.1:49000/pin")
 
     def test_pairing_url_uses_custom_config_port_plus_one(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -704,8 +761,52 @@ class SunshineDetectionTest(unittest.TestCase):
             self.assertEqual(pairing_port(status), 50001)
             self.assertEqual(
                 pairing_url(status),
-                "https://localhost:50001/pin",
+                "https://127.0.0.1:50001/pin",
             )
+
+    def test_is_local_port_open_rejects_invalid_port(self) -> None:
+        self.assertFalse(is_local_port_open(0))
+        self.assertFalse(is_local_port_open(70000))
+        self.assertFalse(is_local_port_open("not-a-port"))  # type: ignore[arg-type]
+
+    def test_is_local_port_open_can_probe_listening_socket(self) -> None:
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            self.assertTrue(is_local_port_open(port, timeout_s=0.5))
+
+    def test_wait_for_local_port_retries_until_open(self) -> None:
+        attempts: list[int] = []
+
+        def probe(_port: int) -> bool:
+            attempts.append(_port)
+            return len(attempts) >= 3
+
+        sleeps: list[float] = []
+        self.assertTrue(
+            wait_for_local_port(
+                47990,
+                timeout_s=2.0,
+                interval_s=0.1,
+                sleep=sleeps.append,
+                probe=probe,
+            )
+        )
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(sleeps, [0.1, 0.1])
+
+    def test_wait_for_local_port_times_out(self) -> None:
+        self.assertFalse(
+            wait_for_local_port(
+                47990,
+                timeout_s=0.0,
+                sleep=lambda _seconds: None,
+                probe=lambda _port: False,
+            )
+        )
 
     def test_default_resolution_mode(self) -> None:
         self.assertEqual(default_resolution_mode(1), "manual")

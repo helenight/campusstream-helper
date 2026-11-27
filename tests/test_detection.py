@@ -28,10 +28,15 @@ def make_sunshine(
     installed: bool = True,
     service_state: str = "running",
     with_exe: bool = True,
+    sunshinesvc_exists: bool = True,
+    service_image_path: Path | None = None,
+    service_image_exists: bool = True,
 ) -> SunshineStatus:
+    install_dir = Path(r"C:\Program Files\Sunshine") if installed else None
+    sunshinesvc_path = install_dir / "tools" / "sunshinesvc.exe" if install_dir else None
     return SunshineStatus(
         installed=installed,
-        install_dir=Path(r"C:\Program Files\Sunshine") if installed else None,
+        install_dir=install_dir,
         executable=(
             Path(r"C:\Program Files\Sunshine\sunshine.exe")
             if installed and with_exe
@@ -46,10 +51,19 @@ def make_sunshine(
         service_state=service_state,  # type: ignore[arg-type]
         version="2026.914.233613" if installed else None,
         detail="test",
+        sunshinesvc_path=sunshinesvc_path,
+        sunshinesvc_exists=sunshinesvc_exists,
+        service_image_path=service_image_path,
+        service_image_exists=service_image_exists,
     )
 
 
-def make_vdd(*, installed: bool = True, with_settings: bool = True) -> VddStatus:
+def make_vdd(
+    *,
+    installed: bool = True,
+    with_settings: bool = True,
+    device_ready: bool = True,
+) -> VddStatus:
     return VddStatus(
         installed=installed,
         install_dir=Path(r"C:\VirtualDisplayDriver") if installed else None,
@@ -63,6 +77,7 @@ def make_vdd(*, installed: bool = True, with_settings: bool = True) -> VddStatus
         configured_monitor_count=1 if installed else 0,
         configured_resolution_count=6 if installed else 0,
         detail="test",
+        device_ready=device_ready,
     )
 
 
@@ -157,10 +172,43 @@ class DetectionModelTest(unittest.TestCase):
         self.assertEqual(running.state, DetectionState.READY)
         self.assertFalse(running.actions)
 
+    def test_sunshine_missing_service_binary_is_failed(self) -> None:
+        item = sunshine_item(make_sunshine(sunshinesvc_exists=False))
+        self.assertEqual(item.state, DetectionState.FAILED)
+        self.assertIn("sunshinesvc.exe 缺失", item.summary)
+        self.assertIn("360", item.summary)
+        self.assertIn(
+            r"请先将 C:\Program Files\Sunshine 加入杀软信任区",
+            item.summary,
+        )
+        self.assertEqual(item.actions[0].kind, "download_sunshine")
+        self.assertEqual(item.actions[0].label, "重新修复安装")
+        self.assertIn("服务程序", [row[0] for row in item.detail])
+
+    def test_sunshine_missing_service_image_is_failed(self) -> None:
+        missing_image = Path(r"C:\Program Files\Sunshine\tools\sunshinesvc.exe")
+        item = sunshine_item(
+            make_sunshine(
+                service_image_path=missing_image,
+                service_image_exists=False,
+            )
+        )
+        self.assertEqual(item.state, DetectionState.FAILED)
+        self.assertIn("sunshinesvc.exe 缺失", item.summary)
+        self.assertEqual(item.actions[0].label, "重新修复安装")
+
     def test_vdd_missing_settings(self) -> None:
         item = vdd_item(make_vdd(with_settings=False))
         self.assertEqual(item.state, DetectionState.WARNING)
         self.assertEqual(item.actions[0].kind, "download_vdd")
+
+    def test_vdd_deployed_but_driver_not_ready(self) -> None:
+        item = vdd_item(make_vdd(device_ready=False))
+        self.assertEqual(item.state, DetectionState.WARNING)
+        self.assertIn("尚未就绪", item.summary)
+        self.assertEqual(item.actions[0].kind, "download_vdd")
+        self.assertEqual(item.actions[0].label, "重新安装 VDD 驱动")
+        self.assertIn("PnP 状态", [row[0] for row in item.detail])
 
     def test_network_firewall_and_ipv6_actions(self) -> None:
         healthy = network_item(make_network(), can_add_firewall=True)

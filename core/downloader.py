@@ -29,6 +29,8 @@ from urllib.request import Request, urlopen
 
 from core import __version__
 from core.common import CommandRunner, OperationResult, default_state_dir
+from core.sunshine import start_service
+from core.vdd import detect_vdd
 
 Package = Literal["sunshine", "vdd"]
 
@@ -459,10 +461,21 @@ def install_sunshine(
         )
     result = runner.mutate(argv, timeout_s=600)
     if result.returncode == 0:
-        return OperationResult.success("Sunshine 安装完成")
+        started = start_service(runner)
+        if started.ok:
+            return OperationResult.success(
+                "Sunshine 安装完成，服务已在后台自启；"
+                "无需手动双击桌面 Sunshine 图标",
+                details=started.details,
+            )
+        return OperationResult.success(
+            "Sunshine 安装完成，但服务未能自动启动；"
+            "请在 Step 1 点击「启动 Sunshine 服务」",
+            details=started.details,
+        )
     if result.returncode == 3010:
         return OperationResult.success(
-            "Sunshine 安装完成，需要重启系统后生效",
+            "Sunshine 安装完成，需要重启系统后服务才会生效",
             details=(result.stderr or result.stdout,),
         )
     detail = (result.stderr or result.stdout or "").strip()
@@ -512,12 +525,27 @@ def _zip_names(zip_path: Path) -> tuple[str, ...]:
         )
 
 
+def find_vdd_control(root: Path) -> Path | None:
+    """在部署目录中查找 ``VDD.Control.exe``（大小写不敏感）。"""
+    base = Path(root)
+    if not base.exists():
+        return None
+    candidates = sorted(
+        (path for path in base.rglob("*") if path.is_file()),
+        key=lambda path: len(path.parts),
+    )
+    for path in candidates:
+        if path.name.casefold() == "vdd.control.exe":
+            return path
+    return None
+
+
 def _find_entry(root: Path) -> tuple[str, Path] | None:
     files = [path for path in root.rglob("*") if path.is_file()]
     files.sort(key=lambda path: len(path.parts))
-    for path in files:
-        if path.name.lower() == "vdd.control.exe":
-            return "control", path
+    control = find_vdd_control(root)
+    if control is not None:
+        return "control", control
     for path in files:
         if path.name.lower() == "install.bat":
             return "bat", path
@@ -643,7 +671,20 @@ def install_vdd(
         extract_zip_safe(path, staging)
         source_root = _effective_source_root(staging)
         copied = _copy_tree_preserving_settings(source_root, install_dir)
-        entry = _find_entry(source_root)
+        # 先看 PnP 中是否已有状态 OK 的虚拟屏；已就绪时不再打扰用户。
+        try:
+            vdd_status = detect_vdd(runner, extra_search_roots=[install_dir])
+        except Exception as exc:
+            runner.log(f"[安装] VDD PnP 预检查失败，将继续启动安装向导：{exc}")
+            vdd_status = None
+        if vdd_status is not None and vdd_status.device_ready:
+            return OperationResult.success(
+                "VDD 驱动已就绪，无需再运行安装向导",
+                details=(f"已复制 {len(copied)} 个文件到 {install_dir}",),
+            )
+
+        # 从部署目录启动 VDD Control，避免临时解压目录被清理后程序缺文件。
+        entry = _find_entry(install_dir)
         details = (
             f"已复制 {len(copied)} 个文件到 {install_dir}",
             f"安装入口：{entry[1].name if entry else '未找到'}",

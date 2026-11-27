@@ -9,7 +9,7 @@ from typing import Literal
 from core.gpu import GpuInfo
 from core.network import NetworkReport
 from core.power import PowerState
-from core.sunshine import SunshineStatus
+from core.sunshine import DEFAULT_INSTALL_DIR, SunshineStatus
 from core.vdd import VddStatus
 
 DetectKey = Literal["admin", "gpu", "sunshine", "vdd", "network"]
@@ -146,9 +146,22 @@ def gpu_item(info: GpuInfo) -> DetectionItem:
 def sunshine_item(status: SunshineStatus | None) -> DetectionItem:
     if status is None:
         return failed_item("sunshine", "未能读取 Sunshine 状态")
+    service_program = (
+        f"{status.sunshinesvc_path}（存在）"
+        if status.sunshinesvc_exists
+        else f"{status.sunshinesvc_path or '未找到'}（缺失）"
+    )
+    service_image = (
+        f"{status.service_image_path}"
+        f"（{'存在' if status.service_image_exists else '缺失'}）"
+        if status.service_image_path is not None
+        else "未读取"
+    )
     detail = (
         ("安装目录", str(status.install_dir or "未检测到")),
         ("服务状态", f"{status.service_name} · {status.service_state}"),
+        ("服务程序", service_program),
+        ("服务 ImagePath", service_image),
         ("版本", status.version or "未知"),
         ("配置文件", str(status.config_path or "未找到 sunshine.conf")),
     )
@@ -161,6 +174,23 @@ def sunshine_item(status: SunshineStatus | None) -> DetectionItem:
             detail=detail,
             actions=(
                 DetectionAction("download_sunshine", "一键自动下载安装"),
+            ),
+        )
+    if status.service_binary_missing:
+        install_dir = status.install_dir or DEFAULT_INSTALL_DIR
+        return DetectionItem(
+            key="sunshine",
+            label=ITEM_LABELS["sunshine"],
+            state=DetectionState.FAILED,
+            summary=(
+                "检测到开机自启服务文件 sunshinesvc.exe 缺失"
+                "（疑似被 360/杀毒软件拦截删除），请先将 "
+                f"{install_dir} 加入杀软信任区，"
+                "再点击右侧「重新修复安装」"
+            ),
+            detail=detail,
+            actions=(
+                DetectionAction("download_sunshine", "重新修复安装"),
             ),
         )
     if status.service_state != "running":
@@ -192,6 +222,10 @@ def vdd_item(status: VddStatus | None) -> DetectionItem:
         ("虚拟屏数量", str(status.configured_monitor_count)),
         ("分辨率条目", str(status.configured_resolution_count)),
         ("驱动版本", status.driver_version or "未知"),
+        (
+            "PnP 状态",
+            "虚拟屏设备 OK" if status.device_ready else "未检测到 OK 状态的虚拟屏",
+        ),
     )
     if not status.installed:
         return DetectionItem(
@@ -201,6 +235,15 @@ def vdd_item(status: VddStatus | None) -> DetectionItem:
             summary="未安装 Virtual Display Driver",
             detail=detail,
             actions=(DetectionAction("download_vdd", "一键自动下载安装"),),
+        )
+    if not status.device_ready:
+        return DetectionItem(
+            key="vdd",
+            label=ITEM_LABELS["vdd"],
+            state=DetectionState.WARNING,
+            summary="VDD 文件已部署，但虚拟屏驱动尚未就绪",
+            detail=detail,
+            actions=(DetectionAction("download_vdd", "重新安装 VDD 驱动"),),
         )
     if status.settings_path is None:
         return DetectionItem(
